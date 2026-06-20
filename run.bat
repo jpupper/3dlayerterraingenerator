@@ -21,5 +21,5 @@ start "" http://localhost:4938
 echo.
 echo  3D Layer Terrain Generator corriendo en http://localhost:4938
 echo  Cerrar esta ventana NO detiene el servidor.
-echo  Para detenerlo, usá: taskkill /F /IM node.exe
+echo  Para detenerlo, use: taskkill /F /IM node.exe
 echo.

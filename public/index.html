@@ -5,128 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Terrain Maker · Topographic Generator</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏔️</text></svg>">
-
-<style>
-  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-  :root {
-    --bg: #0e0e14;   --surface: #18181f;   --surface2: #20202a;
-    --border: #2a2a38; --text: #e8e0d0;    --text2: #908a80;
-    --accent: #e55336; --accent2: #4a9eff; --green: #6b8f5e;
-    --radius: 10px;    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  }
-  html, body { height:100%; background:var(--bg); color:var(--text); font-family:var(--font); overflow:hidden; }
-  .app { display:flex; height:100vh; width:100vw; }
-
-  .panel { width:360px; min-width:360px; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow-y:auto; overflow-x:hidden; z-index:10; }
-  .panel::-webkit-scrollbar { width:4px; }
-  .panel::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-  .panel-header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; background:var(--surface2); position:sticky; top:0; z-index:2; }
-  .panel-header h1 { font-size:15px; font-weight:600; }
-  .panel-header .sub { font-size:10px; color:var(--text2); }
-  .panel-body { padding:12px 16px; flex:1; }
-
-  .section { margin-bottom:18px; }
-  .section-title { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1.2px; color:var(--text2); margin-bottom:8px; }
-
-  .terrain-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  .terrain-card { border:1px solid var(--border); border-radius:8px; padding:8px; cursor:pointer; transition:0.2s; background:rgba(255,255,255,0.02); text-align:center; position:relative; overflow:hidden; }
-  .terrain-card:hover { border-color:var(--text2); background:rgba(255,255,255,0.05); }
-  .terrain-card.active { border-color:var(--accent); background:rgba(229,83,54,0.08); box-shadow:0 0 12px rgba(229,83,54,0.15); }
-  .terrain-card .thumb { width:100%; aspect-ratio:1; border-radius:4px; background:var(--bg); object-fit:cover; display:block; margin-bottom:4px; }
-  .terrain-card .name { font-size:11px; font-weight:600; }
-  .terrain-card .tags { font-size:9px; color:var(--text2); margin-top:2px; }
-  .terrain-card .badge { position:absolute; top:4px; right:4px; background:var(--accent); color:#fff; font-size:8px; padding:2px 6px; border-radius:4px; font-weight:700; }
-
-  .upload-zone { border:2px dashed var(--border); border-radius:8px; padding:24px 16px; text-align:center; cursor:pointer; transition:0.3s; background:rgba(255,255,255,0.02); }
-  .upload-zone:hover, .upload-zone.dragover { border-color:var(--accent); background:rgba(229,83,54,0.06); }
-  .upload-zone.has-image { border-style:solid; border-color:var(--green); padding:12px; }
-  .upload-zone .icon { font-size:36px; }
-  .upload-zone .label { font-size:13px; color:var(--text2); }
-  .upload-zone input[type=file] { display:none; }
-
-  .preview-container { position:relative; width:100%; aspect-ratio:1; background:#000; border-radius:8px; overflow:hidden; border:1px solid var(--border); margin-top:8px; }
-  .preview-container canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
-
-  .control-group { margin-bottom:10px; }
-  .control-label { display:flex; justify-content:space-between; font-size:11px; color:var(--text2); margin-bottom:3px; }
-  .control-label .value { color:var(--text); font-weight:600; }
-  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:3px; background:var(--border); border-radius:2px; outline:none; }
-  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:12px; height:12px; border-radius:50%; background:var(--accent); cursor:pointer; border:2px solid var(--surface); }
-  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--accent); cursor:pointer; border:2px solid var(--surface); }
-
-  .paint-tools { display:flex; gap:4px; margin-bottom:6px; }
-  .paint-btn { flex:1; padding:5px 6px; border-radius:5px; font-size:10px; font-weight:600; border:1px solid var(--border); background:transparent; color:var(--text2); cursor:pointer; transition:0.2s; text-align:center; }
-  .paint-btn:hover { border-color:var(--text2); color:var(--text); }
-  .paint-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-
-  .row2 { display:flex; gap:6px; align-items:center; }
-  .row2 input[type=range] { flex:1; }
-  .row2 label { font-size:10px; color:var(--text2); min-width:30px; }
-  .row2 .val { font-size:10px; min-width:20px; text-align:right; color:var(--text2); }
-
-  .btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:7px 12px; border-radius:6px; font-size:11px; font-weight:600; border:1px solid var(--border); background:var(--surface2); color:var(--text); cursor:pointer; transition:0.2s; width:100%; text-decoration:none; }
-  .btn:hover { border-color:var(--accent); background:rgba(229,83,54,0.1); }
-  .btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .btn-primary:hover { background:#d0482e; }
-  .btn-green { background:var(--green); color:#fff; border-color:var(--green); }
-  .btn-green:hover { background:#5d7f50; }
-  .btn-group { display:flex; gap:5px; }
-  .btn-group .btn { width:auto; flex:1; }
-
-  .viewport { flex:1; position:relative; background:#000; overflow:hidden; }
-  .viewport canvas { display:block; }
-  .viewport-overlay { position:absolute; top:10px; right:10px; display:flex; gap:4px; z-index:5; }
-  .viewport-overlay .btn { width:auto; padding:5px 10px; background:rgba(24,24,31,0.85); backdrop-filter:blur(8px); font-size:10px; }
-  .viewport-overlay .btn.active3d { border-color:var(--accent2); color:var(--accent2); }
-  .viewport-hint { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); font-size:10px; color:rgba(232,224,208,0.2); pointer-events:none; white-space:nowrap; }
-
-  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:rgba(24,24,31,0.95); backdrop-filter:blur(12px); border:1px solid var(--border); border-radius:10px; padding:8px 18px; font-size:12px; color:var(--text); opacity:0; transition:all 0.4s ease; pointer-events:none; z-index:999; }
-  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-
-  .preset-input-row { display:flex; gap:5px; margin-bottom:8px; }
-  .preset-input-row input { flex:1; padding:6px 8px; border-radius:5px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:11px; outline:none; }
-  .preset-input-row input:focus { border-color:var(--accent); }
-  .preset-input-row .btn { width:auto; padding:6px 10px; flex:0 0 auto; }
-  .preset-grid { display:flex; flex-direction:column; gap:4px; max-height:200px; overflow-y:auto; }
-  .preset-grid::-webkit-scrollbar { width:3px; }
-  .preset-grid::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-  .preset-item { display:flex; align-items:center; gap:5px; padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:rgba(255,255,255,0.02); cursor:pointer; transition:0.2s; }
-  .preset-item:hover { border-color:var(--text2); background:rgba(255,255,255,0.05); }
-  .preset-item .p-name { flex:1; font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .preset-item .p-date { font-size:9px; color:var(--text2); margin-right:4px; flex-shrink:0; }
-  .preset-item .p-del { background:none; border:none; color:var(--text2); cursor:pointer; font-size:13px; padding:0 2px; line-height:1; transition:0.2s; flex-shrink:0; }
-  .preset-item .p-del:hover { color:var(--accent); }
-  .preset-item .p-load { background:none; border:none; color:var(--accent2); cursor:pointer; font-size:10px; padding:2px 6px; border-radius:4px; transition:0.2s; flex-shrink:0; font-weight:600; }
-  .preset-item .p-load:hover { background:rgba(74,158,255,0.15); }
-
-  .loading-overlay { position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); font-size:13px; color:var(--text2); gap:8px; pointer-events:none; opacity:0; transition:0.3s; }
-  .loading-overlay.show { opacity:1; }
-  .spinner { width:18px; height:18px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
-  @keyframes spin { to { transform:rotate(360deg); } }
-  .dim-overlay { position:absolute; bottom:40px; left:50%; transform:translateX(-50%); font-size:11px; color:rgba(232,224,208,0.5); pointer-events:none; white-space:nowrap; font-family:var(--font); background:rgba(0,0,0,0.5); padding:4px 10px; border-radius:6px; z-index:5; }
-
-  @media (max-width:800px) { .app { flex-direction:column; } .panel { width:100%; min-width:0; max-height:45vh; border-right:none; border-bottom:1px solid var(--border); } .viewport { flex:1; min-height:55vh; } }
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <div class="app">
 
-  <div class="panel">
+  <!-- ═══ LEFT PANEL: Library, Params, Actions, Presets ═══ -->
+  <div class="panel panel-left">
     <div class="panel-header">
       <a class="back-link" href="index.html" style="color:var(--text2);text-decoration:none;font-size:16px;display:flex;align-items:center;">&larr;</a>
       <div><h1>Terrain Maker</h1><div class="sub">Caminos y Sabores · San Juan</div></div>
     </div>
-
     <div class="panel-body">
 
-      <!-- ═══ TERRAIN LIBRARY ═══ -->
-      <div class="section">
-        <div class="section-title">Librería de Terrenos</div>
-        <div class="terrain-grid" id="terrainGrid"></div>
-      </div>
-
-      <!-- ═══ UPLOAD ═══ -->
       <div class="section">
         <div class="section-title">Cargar Heightmap</div>
         <div class="upload-zone" id="heightUpload">
@@ -135,33 +27,8 @@
           <div style="font-size:10px;color:var(--text2);margin-top:2px;">negro = sin terreno · blanco = máxima elevación</div>
           <input type="file" accept="image/*">
         </div>
-        <div class="preview-container" id="heightPreview" style="display:none;">
-          <canvas id="heightPreviewCanvas"></canvas>
-          <canvas id="paintOverlay"></canvas>
-        </div>
       </div>
 
-      <!-- ═══ PAINT TOOLS ═══ -->
-      <div class="section">
-        <div class="section-title">Pincel de Elevación</div>
-        <div class="paint-tools">
-          <button class="paint-btn active" data-tool="add">⬆ Subir</button>
-          <button class="paint-btn" data-tool="sub">⬇ Bajar</button>
-          <button class="paint-btn" data-tool="smooth">🌊 Suavizar</button>
-          <button class="paint-btn" data-tool="color">🎨 Color</button>
-        </div>
-        <div class="row2"><label>Ø</label><input type="range" id="brushSize" min="3" max="80" value="20"><span class="val" id="brushSizeVal">20</span></div>
-        <div class="row2"><label>Flujo</label><input type="range" id="brushFlow" min="1" max="100" value="30"><span class="val" id="brushFlowVal">30</span></div>
-        <div class="row2"><label>Fuerza</label><input type="range" id="brushStrength" min="-100" max="100" value="30"><span class="val" id="brushStrengthVal">30</span></div>
-        <div class="row2" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">
-          <label>Color base</label>
-          <input type="color" id="baseColorPicker" value="#c4a265" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
-          <label style="min-width:auto;">Pincel</label>
-          <input type="color" id="paintColorPicker" value="#e55336" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
-        </div>
-      </div>
-
-      <!-- ═══ PARAMS ═══ -->
       <div class="section">
         <div class="section-title">Ajuste de Imagen</div>
         <div class="control-group"><div class="control-label"><span>Brillo</span><span class="value" id="brilloVal">0.00</span></div><input type="range" id="brillo" min="-1" max="1" value="0" step="0.01"></div>
@@ -178,23 +45,10 @@
         <div class="control-group"><div class="control-label"><span>Suavizado</span><span class="value" id="smoothVal">2</span></div><input type="range" id="smoothing" min="0" max="8" value="2" step="1"></div>
       </div>
 
-      <!-- ═══ ACTIONS ═══ -->
       <div class="section">
         <div class="section-title">Acciones</div>
         <div class="btn-group"><button class="btn btn-primary" id="applyBtn">🔄 Aplicar pincel</button><button class="btn" id="resetHeightBtn">🗑 Reset</button></div>
         <div class="btn-group" style="margin-top:5px;"><button class="btn" id="exportGlb">🌐 GLB</button><button class="btn btn-green" id="exportStl">📦 STL</button><button class="btn" id="exportSvg">📐 SVG capas</button></div>
-      </div>
-
-      <!-- ═══ PRESETS ═══ -->
-      <div class="section">
-        <div class="section-title">Presets Guardados</div>
-        <div class="preset-input-row">
-          <input type="text" id="presetName" placeholder="Nombre del preset..." maxlength="64">
-          <button class="btn btn-primary" id="savePresetBtn">💾 Guardar</button>
-        </div>
-        <div class="preset-grid" id="presetGrid">
-          <div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>
-        </div>
       </div>
 
       <div style="font-size:9px;color:var(--text2);text-align:center;padding:10px 0;border-top:1px solid var(--border);margin:0 -16px;margin-top:6px;">Caminos y Sabores · San Juan · Argentina</div>
@@ -203,1023 +57,106 @@
 
   <!-- ── 3D VIEWPORT ── -->
   <div class="viewport" id="viewport">
-    <div class="viewport-overlay"><button class="btn active3d" id="viewMode3d">🎨 3D</button><button class="btn" id="viewModeHeat">🔥 Heat</button><button class="btn" id="viewModeWire">〰 Wire</button><button class="btn" id="paint3dBtn" style="border-color:var(--border);">🖌 3D Paint</button></div>
+    <div class="viewport-overlay">
+      <button class="btn active3d" id="viewMode3d">🎨 3D</button>
+      <button class="btn" id="viewModeHeat">🔥 Heat</button>
+      <button class="btn" id="viewModeWire">〰 Wire</button>
+      <button class="btn" id="paint3dBtn" style="border-color:var(--border);">🖌 3D Paint</button>
+      <button class="btn" id="showBaseBtn" style="border-color:var(--border);">🧱 Base visible</button>
+    </div>
     <div class="viewport-hint">Arrastrar para orbitar · Scroll para zoom</div>
     <div class="dim-overlay" id="dimOverlay"></div>
     <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div><span>Generando terreno...</span></div>
   </div>
+
+  <!-- ═══ RIGHT PANEL: Paint, Colors, Preview, Library, Presets ═══ -->
+  <div class="panel panel-right">
+    <div class="panel-header">
+      <div><h1>Pinceles</h1><div class="sub">Herramientas de pintura</div></div>
+    </div>
+    <div class="panel-body">
+
+      <!-- Heightmap Preview -->
+      <div class="section">
+        <div class="section-title collapsible collapsed" data-target="previewBody">
+          <span class="collapse-toggle">▶</span> Vista previa
+        </div>
+        <div class="collapse-body" id="previewBody">
+          <div class="preview-container" id="heightPreview" style="display:none;">
+            <canvas id="heightPreviewCanvas"></canvas>
+            <canvas id="paintOverlay"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Paint Tools -->
+      <div class="section">
+        <div class="section-title collapsible" data-target="paintBody">
+          <span class="collapse-toggle">▼</span> Pincel <span id="paintModeLabel" class="mode-label">· ⬆</span>
+        </div>
+        <div class="collapse-body" id="paintBody">
+          <div class="paint-tools">
+            <button class="paint-btn active" data-tool="add">⬆ Subir</button>
+            <button class="paint-btn" data-tool="sub">⬇ Bajar</button>
+            <button class="paint-btn" data-tool="smooth">🌊 Suavizar</button>
+            <button class="paint-btn" data-tool="color">🎨 Color</button>
+          </div>
+          <div class="row2"><label>Ø</label><input type="range" id="brushSize" min="3" max="80" value="20"><span class="val" id="brushSizeVal">20</span></div>
+          <div class="row2"><label>Flujo</label><input type="range" id="brushFlow" min="1" max="100" value="30"><span class="val" id="brushFlowVal">30</span></div>
+          <div class="row2"><label>Fuerza</label><input type="range" id="brushStrength" min="-100" max="100" value="30"><span class="val" id="brushStrengthVal">30</span></div>
+        </div>
+      </div>
+
+      <!-- Colors -->
+      <div class="section">
+        <div class="section-title collapsible" data-target="colorsBody">
+          <span class="collapse-toggle">▼</span> Colores
+        </div>
+        <div class="collapse-body" id="colorsBody">
+          <div class="row2" style="margin-top:4px;">
+            <label>Color base</label>
+            <input type="color" id="baseColorPicker" value="#c4a265" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
+            <label style="min-width:auto;">Pincel</label>
+            <input type="color" id="paintColorPicker" value="#e55336" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
+          </div>
+          <div class="row2"><label>Opacidad</label><input type="range" id="paintAlpha" min="0" max="1" value="0.5" step="0.01"><span class="val" id="paintAlphaVal">0.50</span></div>
+        </div>
+      </div>
+
+      <!-- Terrain Library (collapsible) -->
+      <div class="section">
+        <div class="section-title collapsible" data-target="rightTerrainBody">
+          <span class="collapse-toggle">▶</span> Librería de Terrenos
+        </div>
+        <div class="collapse-body collapsed" id="rightTerrainBody">
+          <div class="terrain-grid" id="rightTerrainGrid"></div>
+        </div>
+      </div>
+
+      <!-- Presets (collapsible) -->
+      <div class="section">
+        <div class="section-title collapsible" data-target="rightPresetsBody">
+          <span class="collapse-toggle">▶</span> Presets Guardados
+        </div>
+        <div class="collapse-body collapsed" id="rightPresetsBody">
+          <div class="preset-input-row">
+            <input type="text" id="rightPresetName" placeholder="Nombre del preset..." maxlength="64">
+            <button class="btn btn-primary" id="rightSavePresetBtn">💾 Guardar</button>
+          </div>
+          <div class="preset-grid" id="rightPresetGrid">
+            <div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"}}</script>
-
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-
-// ═══════════════════════════════════════════════════════
-// TERRAIN LIBRARY
-// ═══════════════════════════════════════════════════════
-const TERRAIN_LIB = {
-  'san-juan': { name:'San Juan', tags:'Relieve completo · fondo negro puro', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:20, maxHeight:4.0, smoothing:3 },
-  'san-juan-detailed': { name:'San Juan HD', tags:'Relieve detallado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:25, maxHeight:5.0, smoothing:2 },
-  'san-juan-topo': { name:'San Juan Topo', tags:'Desde topográfico · fondo negro', thumb:'maqueta/heightmap_topo.png', depthUrl:'maqueta/heightmap_topo.png', layers:18, maxHeight:4.5, smoothing:2 },
-  'san-juan-suave': { name:'San Juan Suave', tags:'Relieve suavizado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:15, maxHeight:3.0, smoothing:4 },
-  'default-hill': { name:'Colina Default', tags:'Terreno genérico', thumb:null, depthUrl:null, layers:15, maxHeight:3.0, smoothing:2, isDefault:true },
-};
-
-// ═══════════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════════
-let RES = 128;
-let heightData = new Float32Array(RES * RES);
-let baseHeightData = new Float32Array(RES * RES);
-let needsRegen = true;
-let rebuildPending = false;
-
-const state = {
-  layers:15, maxHeight:3.0, smoothing:2,
-  brillo:0, contraste:1, resolution:128,
-  sizeX:5, sizeZ:5,
-  tool:'add', brushSize:20, brushFlow:30, brushStrength:0.3,
-  viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
-  baseColor:'#c4a265', paintColor:'#e55336',
-};
-
-let vertexColors = null;
-let colorData = null;
-
-let threeReady = false;
-let terrainMesh = null;
-let rulerGroup = null;
-let brushRing = null;
-let scene, camera, renderer, controls;
-
-// ═══════════════════════════════════════════════════════
-// DOM
-// ═══════════════════════════════════════════════════════
-const $ = s => document.querySelector(s);
-const viewport = $('#viewport');
-const loadingOverlay = $('#loadingOverlay');
-const toastEl = $('#toast');
-let toastTimer;
-function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500); }
-
-const heightCanvas = $('#heightPreviewCanvas');
-const paintOverlay = $('#paintOverlay');
-const hCtx = heightCanvas.getContext('2d');
-const pCtx = paintOverlay.getContext('2d');
-const SZ = 512;
-heightCanvas.width = SZ; heightCanvas.height = SZ;
-paintOverlay.width = SZ; paintOverlay.height = SZ;
-
-// ═══════════════════════════════════════════════════════
-// SCHEDULED REBUILD
-// ═══════════════════════════════════════════════════════
-function scheduleRebuild() {
-  if (!rebuildPending && threeReady) {
-    rebuildPending = true;
-    loadingOverlay.classList.add('show');
-    requestAnimationFrame(() => { rebuildPending = false; rebuildTerrain(); });
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// TERRAIN LIBRARY UI
-// ═══════════════════════════════════════════════════════
-const terrainGrid = $('#terrainGrid');
-function buildTerrainLibrary() {
-  terrainGrid.innerHTML = '';
-  for (const [id, t] of Object.entries(TERRAIN_LIB)) {
-    const card = document.createElement('div');
-    card.className = 'terrain-card' + (id === state.activeTerrain ? ' active' : '');
-    card.dataset.id = id;
-    const thumb = document.createElement('img'); thumb.className = 'thumb';
-    if (t.thumb) thumb.src = t.thumb;
-    else thumb.style.background = 'linear-gradient(180deg,#444 0%,#222 40%,#000 100%)';
-    const nameEl = document.createElement('div'); nameEl.className = 'name'; nameEl.textContent = t.name;
-    const tagsEl = document.createElement('div'); tagsEl.className = 'tags'; tagsEl.textContent = t.tags;
-    card.appendChild(thumb); card.appendChild(nameEl); card.appendChild(tagsEl);
-    if (id === state.activeTerrain) { const b = document.createElement('div'); b.className = 'badge'; b.textContent = 'ACTIVO'; card.appendChild(b); }
-    card.addEventListener('click', () => loadTerrain(id));
-    terrainGrid.appendChild(card);
-  }
-}
-
-function loadTerrain(id) {
-  const t = TERRAIN_LIB[id];
-  if (!t) return;
-  state.activeTerrain = id;
-  state.layers = t.layers; state.maxHeight = t.maxHeight;
-  state.smoothing = t.smoothing;
-  state.brillo = 0; state.contraste = 1;
-
-  $('#layers').value = t.layers; $('#layersVal').textContent = t.layers;
-  $('#maxHeight').value = t.maxHeight; $('#heightVal').textContent = t.maxHeight.toFixed(1);
-  $('#smoothing').value = t.smoothing; $('#smoothVal').textContent = t.smoothing;
-  $('#brillo').value = 0; $('#brilloVal').textContent = '0.00';
-  $('#contraste').value = 1; $('#contrasteVal').textContent = '1.00';
-
-  buildTerrainLibrary();
-
-  if (t.isDefault) { genDefaultTerrain(); return; }
-
-  loadingOverlay.classList.add('show');
-  if (t.depthUrl) {
-    const img = new Image();
-    img.onload = () => {
-      loadImageToData(img, heightData);
-      loadingOverlay.classList.remove('show');
-      needsRegen = true;
-      drawCanvas();
-      if (threeReady) rebuildTerrain();
-      toast(`Terreno "${t.name}" cargado`);
-    };
-    img.onerror = () => { loadingOverlay.classList.remove('show'); toast(`Error cargando ${t.name}`); };
-    img.src = t.depthUrl;
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// IMAGE PROCESSING
-// ═══════════════════════════════════════════════════════
-function loadImageToData(img, arr) {
-  const c = document.createElement('canvas');
-  c.width = RES; c.height = RES;
-  const ctx = c.getContext('2d');
-  ctx.drawImage(img, 0, 0, RES, RES);
-  const pix = ctx.getImageData(0, 0, RES, RES).data;
-  for (let i = 0; i < RES * RES; i++)
-    arr[i] = Math.max(0, Math.min(1, (pix[i*4]*0.299 + pix[i*4+1]*0.587 + pix[i*4+2]*0.116) / 255));
-}
-
-function applyBrilloContraste() {
-  const b = state.brillo, c = state.contraste;
-  for (let i = 0; i < RES * RES; i++) {
-    const v = baseHeightData[i];
-    if (v > 0.001) baseHeightData[i] = Math.max(0, Math.min(1, (v - 0.5) * c + 0.5 + b));
-  }
-}
-
-function genDefaultTerrain() {
-  heightData.fill(0);
-  const cx = RES/2, cy = RES/2;
-  for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
-    const d = Math.sqrt(((x-cx)/cx)**2 + ((y-cy)/cy)**2);
-    if (d < 1) heightData[y*RES+x] = Math.max(0, 1-d) * 0.6 + Math.random() * 0.08;
-  }
-  for (const [bx,bz] of [[0.3,0.4],[-0.2,0.3],[0.1,-0.4]]) for (let y=0;y<RES;y++) for (let x=0;x<RES;x++) {
-    const d = Math.sqrt(((x/RES-0.5-bx)*3)**2 + ((y/RES-0.5-bz)*3)**2);
-    if (d < 0.8) heightData[y*RES+x] = Math.min(1, heightData[y*RES+x] + (1-d/0.8)*0.35);
-  }
-  baseHeightData.set(heightData);
-  needsRegen = true; drawCanvas();
-  if (threeReady) rebuildTerrain();
-  toast('Default terrain loaded');
-}
-
-function reallocateData(newRes) {
-  if (newRes === RES) return;
-  const oldRes = RES;
-  const oldData = new Float32Array(heightData);
-  RES = newRes;
-  heightData = new Float32Array(RES * RES);
-  baseHeightData = new Float32Array(RES * RES);
-  // Resample old data into new resolution
-  for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
-    const ox = (x / (RES-1)) * (oldRes-1);
-    const oy = (y / (RES-1)) * (oldRes-1);
-    const ix = Math.min(Math.floor(ox), oldRes-2);
-    const iy = Math.min(Math.floor(oy), oldRes-2);
-    const fx = ox - ix, fy = oy - iy;
-    const a = oldData[iy*oldRes+ix], b = oldData[iy*oldRes+(ix+1)];
-    const c = oldData[(iy+1)*oldRes+ix], d = oldData[(iy+1)*oldRes+(ix+1)];
-    heightData[y*RES+x] = a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
-  }
-  baseHeightData.set(heightData);
-}
-
-// ═══════════════════════════════════════════════════════
-// CANVAS
-// ═══════════════════════════════════════════════════════
-function drawCanvas() {
-  const w = SZ, h = SZ;
-  const img = hCtx.createImageData(w, h);
-  const d = img.data;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const v = Math.round(baseHeightData[Math.floor(y/h*RES)*RES + Math.floor(x/w*RES)] * 255);
-    const i = (y*w+x)*4; d[i]=v; d[i+1]=v; d[i+2]=v; d[i+3]=255;
-  }
-  hCtx.putImageData(img, 0, 0);
-  $('#heightPreview').style.display = 'block';
-}
-
-// ═══════════════════════════════════════════════════════
-// SMOOTHING
-// ═══════════════════════════════════════════════════════
-function smoothHeightmap(passes) {
-  if (passes <= 0) return;
-  const tmp = new Float32Array(RES*RES);
-  for (let p = 0; p < passes; p++) {
-    for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
-      let s = 0, n = 0;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const nx = x+dx, ny = y+dy;
-        if (nx>=0 && nx<RES && ny>=0 && ny<RES) { s += heightData[ny*RES+nx]; n++; }
-      }
-      tmp[y*RES+x] = s / n;
-    }
-    heightData.set(tmp);
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// PAINTING
-// ═══════════════════════════════════════════════════════
-let isPainting = false;
-function getCoords(e) {
-  const r = paintOverlay.getBoundingClientRect();
-  return { x: Math.max(0,Math.min(SZ-1,(e.clientX-r.left)/r.width*SZ)), y: Math.max(0,Math.min(SZ-1,(e.clientY-r.top)/r.height*SZ)) };
-}
-
-function paintAt(cx, cy) {
-  const hx = Math.floor(cx/SZ*RES), hy = Math.floor(cy/SZ*RES);
-  const size = state.brushSize, flow = state.brushFlow/100, radius = size/2;
-  for (let dy = -Math.ceil(radius); dy <= Math.ceil(radius); dy++) for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
-    const px = hx+dx, py = hy+dy;
-    if (px<0 || px>=RES || py<0 || py>=RES) continue;
-    const dist = Math.sqrt(dx*dx+dy*dy);
-    if (dist > radius) continue;
-    const f = 1 - dist/radius;
-    const cur = heightData[py*RES+px];
-    if (state.tool === 'add') heightData[py*RES+px] = Math.min(1, cur + f*flow*0.15);
-    else if (state.tool === 'sub') heightData[py*RES+px] = Math.max(0, cur - f*flow*0.15);
-    else if (state.tool === 'smooth') {
-      let s=0, n=0;
-      for (let sy=-1;sy<=1;sy++) for (let sx=-1;sx<=1;sx++) { const nx=px+sx, ny=py+sy; if (nx>=0&&nx<RES&&ny>=0&&ny<RES) { s+=heightData[ny*RES+nx]; n++; } }
-      heightData[py*RES+px] = cur + (s/n - cur)*f*flow*0.5;
-    }
-  }
-  needsRegen = true;
-}
-
-paintOverlay.addEventListener('mousedown', e => { isPainting = true; const p=getCoords(e); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); });
-window.addEventListener('mousemove', e => { if (!isPainting) return; const p=getCoords(e); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); });
-window.addEventListener('mouseup', () => { if (isPainting) { isPainting=false; if (threeReady) rebuildTerrain(); }});
-paintOverlay.addEventListener('mouseleave', () => { if (isPainting) { isPainting=false; if (threeReady) rebuildTerrain(); }});
-
-paintOverlay.addEventListener('touchstart', e => { e.preventDefault(); isPainting=true; const p=getCoords(e.touches[0]); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); }, {passive:false});
-paintOverlay.addEventListener('touchmove', e => { e.preventDefault(); if (!isPainting) return; const p=getCoords(e.touches[0]); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); }, {passive:false});
-paintOverlay.addEventListener('touchend', e => { e.preventDefault(); isPainting=false; if (threeReady) rebuildTerrain(); }, {passive:false});
-
-// ═══════════════════════════════════════════════════════
-// FILE UPLOAD
-// ═══════════════════════════════════════════════════════
-const hz = $('#heightUpload');
-hz.addEventListener('click', () => hz.querySelector('input').click());
-hz.addEventListener('dragover', e => { e.preventDefault(); hz.classList.add('dragover'); });
-hz.addEventListener('dragleave', () => hz.classList.remove('dragover'));
-hz.addEventListener('drop', e => { e.preventDefault(); hz.classList.remove('dragover'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
-hz.querySelector('input').addEventListener('change', () => { if (hz.querySelector('input').files[0]) loadFile(hz.querySelector('input').files[0]); });
-
-function loadFile(file) {
-  const validTypes = ['image/png','image/jpeg','image/gif','image/webp','image/bmp'];
-  if (!validTypes.includes(file.type)) {
-    toast('Formato no soportado. Usá PNG, JPEG, GIF, WebP o BMP.');
-    return;
-  }
-  if (file.size > 50 * 1024 * 1024) {
-    toast('La imagen es demasiado grande (>50MB).');
-    return;
-  }
-  loadingOverlay.classList.add('show');
-  const reader = new FileReader();
-  reader.onerror = () => { loadingOverlay.classList.remove('show'); toast('Error al leer el archivo'); };
-  reader.onload = e => {
-    const img = new Image();
-    img.onerror = () => { loadingOverlay.classList.remove('show'); toast('Error al decodificar la imagen'); };
-    img.onload = () => {
-      loadImageToData(img, heightData);
-      baseHeightData.set(heightData);
-      state.activeTerrain = 'custom';
-      buildTerrainLibrary();
-      drawCanvas();
-      needsRegen = true;
-      hz.classList.add('has-image');
-      hz.querySelector('.icon').textContent = '✅';
-      hz.querySelector('.label').textContent = file.name;
-      if (threeReady) { requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); }); } else { loadingOverlay.classList.remove('show'); }
-      toast(`Heightmap "${file.name}" cargado`);
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
-}
-
-// ═══════════════════════════════════════════════════════
-// THREE.JS
-// ═══════════════════════════════════════════════════════
-function initThree() {
-  scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a12);
-  camera = new THREE.PerspectiveCamera(40, viewport.clientWidth/viewport.clientHeight, 0.1, 100);
-  const camDist = Math.max(state.sizeX, state.sizeZ) * 1.8;
-  camera.position.set(camDist * 0.7, camDist * 0.6, camDist);
-  renderer = new THREE.WebGLRenderer({antialias:true});
-  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
-  viewport.appendChild(renderer.domElement);
-  renderer.domElement.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;display:block;';
-
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.dampingFactor = 0.08;
-  controls.minDistance = 1.5; controls.maxDistance = Math.max(state.sizeX, state.sizeZ) * 4;
-  controls.target.set(0, 0, 0); controls.update();
-
-  scene.add(new THREE.AmbientLight(0x404060, 0.6));
-  scene.add(new THREE.HemisphereLight(0x87ceeb, 0x362d1e, 0.7));
-  const dl = new THREE.DirectionalLight(0xffeedd, 2.5);
-  dl.position.set(8,15,5); dl.castShadow = true;
-  dl.shadow.mapSize.width = 1024; dl.shadow.mapSize.height = 1024;
-  dl.shadow.camera.near = 0.1; dl.shadow.camera.far = 30;
-  const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
-  dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
-  dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
-  dl.shadow.camera.far = shMax * 3;
-  scene.add(dl);
-  const fl = new THREE.DirectionalLight(0x8888ff, 0.5); fl.position.set(-5,3,-5); scene.add(fl);
-
-  // Ruler group (measurement grid)
-  buildRuler(state.sizeX, state.sizeZ);
-
-  // Brush ring cursor
-  const ringGeo = new THREE.RingGeometry(0.18, 0.2, 32);
-  const ringMat = new THREE.MeshBasicMaterial({ color: 0x4a9eff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
-  brushRing = new THREE.Mesh(ringGeo, ringMat);
-  brushRing.rotation.x = -Math.PI / 2;
-  brushRing.position.y = 10;
-  brushRing.visible = false;
-  scene.add(brushRing);
-
-  threeReady = true;
-  animate();
-  rebuildTerrain();
-  setup3dPaintEvents();
-
-  new ResizeObserver(() => { const w=viewport.clientWidth,h=viewport.clientHeight; if (w>0&&h>0) { camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); }}).observe(viewport);
-}
-
-function makeTextSprite(text, color='#8caadf', size=0.3) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 80;
-  const ctx = canvas.getContext('2d');
-  ctx.font = 'Bold 36px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = color; ctx.fillText(text, 128, 42);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, opacity: 0.85, sizeAttenuation: true });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(size * 4, size * 1.2, 1);
-  return sprite;
-}
-
-function buildRuler(sizeX, sizeZ) {
-  if (rulerGroup) { scene.remove(rulerGroup); rulerGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); }); }
-  rulerGroup = new THREE.Group();
-
-  const hx = sizeX / 2, hz = sizeZ / 2;
-
-  // --- Grid lines ---
-  const gridMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.12 });
-  const gridStep = 0.5;
-  const gridLines = [];
-  // Lines along X
-  for (let z = -hz; z <= hz + 0.001; z += gridStep) {
-    gridLines.push(new THREE.Vector3(-hx, 0, z), new THREE.Vector3(hx, 0, z));
-  }
-  // Lines along Z
-  for (let x = -hx; x <= hx + 0.001; x += gridStep) {
-    gridLines.push(new THREE.Vector3(x, 0, -hz), new THREE.Vector3(x, 0, hz));
-  }
-  const gridGeo = new THREE.BufferGeometry().setFromPoints(gridLines);
-  const gridLine = new THREE.LineSegments(gridGeo, gridMat);
-  rulerGroup.add(gridLine);
-
-  // --- Perimeter (thicker) ---
-  const perimMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.5 });
-  const pts = [
-    new THREE.Vector3(-hx,0,-hz), new THREE.Vector3(hx,0,-hz),
-    new THREE.Vector3(hx,0,hz), new THREE.Vector3(-hx,0,hz), new THREE.Vector3(-hx,0,-hz)
-  ];
-  const perimeter = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), perimMat);
-  rulerGroup.add(perimeter);
-
-  // --- Tick marks on perimeter ---
-  const tickMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.4 });
-  const tickLen = 0.12;
-  for (let t = -hz + gridStep; t < hz; t += gridStep) {
-    const sz = (Math.abs(t) < 0.01) ? tickLen * 2 : tickLen;
-    for (const pts2 of [[-hx,t,-hx+sz,t],[hx,t,hx-sz,t]]) {
-      rulerGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(pts2[0],0,pts2[1]), new THREE.Vector3(pts2[2],0,pts2[3])]), tickMat));
-    }
-  }
-  for (let t = -hx + gridStep; t < hx; t += gridStep) {
-    const sz = (Math.abs(t) < 0.01) ? tickLen * 2 : tickLen;
-    for (const pts2 of [[t,-hz,t,-hz+sz],[t,hz,t,hz-sz]]) {
-      rulerGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(pts2[0],0,pts2[1]), new THREE.Vector3(pts2[2],0,pts2[3])]), tickMat));
-    }
-  }
-
-  // --- Dimension labels ---
-  // Width label (X axis)
-  const lblW = makeTextSprite(sizeX.toFixed(1) + 'cm', '#8caadf', 0.35);
-  lblW.position.set(0, 0.05, -hz - 0.6);
-  rulerGroup.add(lblW);
-  // Label arrow line
-  const arrMat1 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
-  const arr1 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx, 0.02, -hz - 0.3), new THREE.Vector3(hx, 0.02, -hz - 0.3)
-  ]), arrMat1);
-  rulerGroup.add(arr1);
-
-  // Depth label (Z axis)
-  const lblD = makeTextSprite(sizeZ.toFixed(1) + 'cm', '#8caadf', 0.35);
-  lblD.position.set(hx + 0.6, 0.05, 0);
-  rulerGroup.add(lblD);
-  const arrMat2 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
-  const arr2 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(hx + 0.3, 0.02, -hz), new THREE.Vector3(hx + 0.3, 0.02, hz)
-  ]), arrMat2);
-  rulerGroup.add(arr2);
-
-  // Height label (Y axis) - vertical line near front-left corner
-  const maxH = state.maxHeight;
-  const arrMat3 = new THREE.LineBasicMaterial({ color: 0xcf8a6f, transparent: true, opacity: 0.4 });
-  const arr3 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx - 0.3, 0, -hz), new THREE.Vector3(-hx - 0.3, maxH, -hz)
-  ]), arrMat3);
-  rulerGroup.add(arr3);
-  // Top tick
-  const tickH = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx - 0.45, maxH, -hz), new THREE.Vector3(-hx - 0.15, maxH, -hz)
-  ]), arrMat3);
-  rulerGroup.add(tickH);
-  const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', 0.3);
-  lblH.position.set(-hx - 0.7, maxH * 0.5, -hz);
-  rulerGroup.add(lblH);
-
-  rulerGroup.position.y = 0.01;
-  scene.add(rulerGroup);
-}
-
-function updateDimOverlay() {
-  const w = state.sizeX.toFixed(1), d = state.sizeZ.toFixed(1);
-  const maxH = state.maxHeight.toFixed(1);
-  const el = $('#dimOverlay');
-  if (el) el.textContent = `📐 ${w}cm × ${d}cm · Altura máx ${maxH}cm · Capas ${state.layers}`;
-}
-
-function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
-
-// ═══════════════════════════════════════════════════════
-// TERRAIN GEOMETRY
-// ═══════════════════════════════════════════════════════
-function rebuildTerrain() {
-  if (!threeReady) return;
-
-  // 1. Smooth into baseHeightData
-  if (state.smoothing > 0) {
-    const saved = new Float32Array(heightData);
-    smoothHeightmap(state.smoothing);
-    baseHeightData.set(heightData);
-    heightData.set(saved);
-  } else {
-    baseHeightData.set(heightData);
-  }
-
-  // 2. Apply brightness/contrast
-  applyBrilloContraste();
-
-  // 3. Update canvas
-  drawCanvas();
-
-  // 4. Quantize
-  const N = state.layers;
-  const quantized = new Float32Array(RES*RES);
-  for (let i = 0; i < RES*RES; i++) quantized[i] = Math.floor(baseHeightData[i] * N) / N;
-
-  // Initialize colorData if needed
-  if (!colorData || colorData.length !== RES*RES*3) {
-    colorData = new Float32Array(RES*RES*3);
-    const base = new THREE.Color(state.baseColor || '#c4a265');
-    for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
-  }
-
-  const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight;
-  const positions = [], indices = [], colors = [];
-
-  const cr = t => {
-    const c = new THREE.Color();
-    if (state.viewMode === 'heat') {
-      if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
-      else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
-      else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
-      else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
-    } else {
-      // Use vertex colors (painted or base color)
-      const idx = (Math.floor(t * (RES*RES-1)))*3; // fallback - will be overwritten below
-    }
-    return c;
-  };
-
-  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const h = quantized[z*RES+x];
-    positions.push((x/(RES-1)-0.5)*scaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ);
-    if (state.viewMode === 'heat') {
-      const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
-    } else {
-      const idx = (z*RES+x)*3;
-      colors.push(colorData[idx], colorData[idx+1], colorData[idx+2]);
-    }
-  }
-
-  for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
-    const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
-    // Skip quads where all corners are flat (height = 0) — no geometry for black areas
-    if (quantized[a] === 0 && quantized[b] === 0 && quantized[c] === 0 && quantized[d] === 0) continue;
-    indices.push(a,b,c); indices.push(b,d,c);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
-
-  let mat;
-  if (state.viewMode === 'wire') mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
-  else mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
-
-  terrainMesh = new THREE.Mesh(geo, mat);
-  terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
-  needsRegen = false;
-  loadingOverlay.classList.remove('show');
-
-  // Update ruler position and dimension overlay
-  if (rulerGroup) { scene.remove(rulerGroup); rulerGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); }); rulerGroup = null; }
-  buildRuler(state.sizeX, state.sizeZ);
-  updateDimOverlay();
-
-  // Update shadow camera to fit terrain
-  const dl = scene.children.find(c => c.isDirectionalLight && c.shadow);
-  if (dl) {
-    const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
-    dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
-    dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
-    dl.shadow.camera.far = shMax * 3;
-    dl.shadow.camera.updateProjectionMatrix();
-  }
-
-  // Adjust orbit max distance
-  controls.maxDistance = Math.max(state.sizeX, state.sizeZ) * 4;
-}
-
-// ═══════════════════════════════════════════════════════
-// VIEW MODE
-// ═══════════════════════════════════════════════════════
-function setViewMode(mode) {
-  state.viewMode = mode;
-  document.querySelectorAll('.viewport-overlay .btn').forEach(b => b.classList.remove('active3d'));
-  if (mode === 'solid') $('#viewMode3d').classList.add('active3d');
-  else if (mode === 'heat') $('#viewModeHeat').classList.add('active3d');
-  else if (mode === 'wire') $('#viewModeWire').classList.add('active3d');
-  loadingOverlay.classList.add('show');
-  requestAnimationFrame(() => rebuildTerrain());
-}
-$('#viewMode3d').addEventListener('click', () => setViewMode('solid'));
-$('#viewModeHeat').addEventListener('click', () => setViewMode('heat'));
-$('#viewModeWire').addEventListener('click', () => setViewMode('wire'));
-
-// ═══════════════════════════════════════════════════════
-// 3D RAYCAST PAINTING
-// ═══════════════════════════════════════════════════════
-let is3dPainting = false;
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-let paint3dBtn = $('#paint3dBtn');
-
-function get3dGridPos(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(pointer, camera);
-  if (!terrainMesh) return null;
-  const intersects = raycaster.intersectObject(terrainMesh);
-  if (intersects.length === 0) return null;
-  const pt = intersects[0].point;
-  const sX = state.sizeX, sZ = state.sizeZ;
-  const gx = Math.round(((pt.x / sX) + 0.5) * (RES-1));
-  const gz = Math.round(((pt.z / sZ) + 0.5) * (RES-1));
-  if (gx < 0 || gx >= RES || gz < 0 || gz >= RES) return null;
-  return {x: gx, z: gz};
-}
-
-function paint3dAt(gx, gz) {
-  const size = state.brushSize, flow = state.brushFlow / 100;
-  const radius = size / 2;
-  for (let dz = -Math.ceil(radius); dz <= Math.ceil(radius); dz++) for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
-    const px = gx+dx, pz = gz+dz;
-    if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
-    const dist = Math.sqrt(dx*dx+dz*dz);
-    if (dist > radius) continue;
-    const f = 1 - dist/radius;
-    const cur = heightData[pz*RES+px];
-    if (state.tool === 'add') heightData[pz*RES+px] = Math.min(1, cur + f*flow*0.08);
-    else if (state.tool === 'sub') heightData[pz*RES+px] = Math.max(0, cur - f*flow*0.08);
-    else if (state.tool === 'smooth') {
-      let s2=0, n2=0;
-      for (let sy=-1;sy<=1;sy++) for (let sx=-1;sx<=1;sx++) { const nx=px+sx, ny=pz+sy; if (nx>=0&&nx<RES&&ny>=0&&ny<RES) { s2+=heightData[ny*RES+nx]; n2++; } }
-      heightData[pz*RES+px] = cur + (s2/n2 - cur)*f*flow*0.4;
-    }
-    else if (state.tool === 'color') {
-      const col = new THREE.Color(state.paintColor || '#c4a265');
-      const idx = (pz*RES+px)*3;
-      colorData[idx] = col.r;
-      colorData[idx+1] = col.g;
-      colorData[idx+2] = col.b;
-    }
-  }
-  needsRegen = true;
-}
-
-function updateMeshVertices() {
-  if (!terrainMesh) return;
-  baseHeightData.set(heightData);
-  const hScale = state.maxHeight, N = state.layers;
-  const posAttr = terrainMesh.geometry.getAttribute('position');
-  const arr = posAttr.array;
-  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const h = Math.floor(baseHeightData[z*RES+x] * N) / N;
-    arr[(z*RES+x)*3+1] = h * hScale;
-  }
-  posAttr.needsUpdate = true;
-  terrainMesh.geometry.computeVertexNormals();
-}
-
-paint3dBtn.addEventListener('click', () => {
-  state.paint3d = !state.paint3d;
-  paint3dBtn.style.borderColor = state.paint3d ? 'var(--accent)' : 'var(--border)';
-  paint3dBtn.style.background = state.paint3d ? 'rgba(229,83,54,0.15)' : '';
-  toast(state.paint3d ? '3D Paint activado - click sobre el terreno' : '3D Paint desactivado');
-});
-
-function setup3dPaintEvents() {
-  renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
-  renderer.domElement.addEventListener('mousedown', e => {
-    if (!state.paint3d || !terrainMesh || e.button !== 0) return;
-    const p = get3dGridPos(e);
-    if (!p) return; // Not on terrain — let OrbitControls work
-    controls.enabled = false;
-    is3dPainting = true;
-    if (state.tool === 'color') { paint3dAt(p.x, p.z); drawCanvas(); updateMeshColors(); }
-    else { paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices(); }
-    updateBrushRing(e);
-  });
-  renderer.domElement.addEventListener('mousemove', e => {
-    if (!state.paint3d) { brushRing.visible = false; return; }
-    updateBrushRing(e);
-    if (!is3dPainting) return;
-    const p = get3dGridPos(e);
-    if (p) {
-      if (state.tool === 'color') { paint3dAt(p.x, p.z); drawCanvas(); updateMeshColors(); }
-      else { paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices(); }
-    }
-  });
-  window.addEventListener('mouseup', () => {
-    if (is3dPainting) {
-      is3dPainting = false; controls.enabled = true;
-      loadingOverlay.classList.add('show');
-      requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
-    }
-    brushRing.visible = false;
-  });
-  renderer.domElement.addEventListener('mouseleave', () => {
-    if (is3dPainting) {
-      is3dPainting = false; controls.enabled = true;
-      loadingOverlay.classList.add('show');
-      requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
-    }
-    brushRing.visible = false;
-  });
-
-  function updateBrushRing(e) {
-    if (!brushRing || !terrainMesh) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const py = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(new THREE.Vector2(px, py), camera);
-    const hits = raycaster.intersectObject(terrainMesh);
-    if (hits.length > 0) {
-      const pt = hits[0].point;
-      const ringScale = (state.sizeX + state.sizeZ) / 2;
-      const r = (state.brushSize / RES) * ringScale * 0.5;
-      brushRing.position.set(pt.x, pt.y + 0.02, pt.z);
-      brushRing.scale.set(r/0.2, r/0.2, 1);
-      brushRing.visible = state.paint3d;
-    } else {
-      brushRing.visible = false;
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// EXPORTS
-// ═══════════════════════════════════════════════════════
-$('#exportStl').addEventListener('click', () => {
-  if (!terrainMesh) { toast('Primero generá el terreno'); return; }
-  const b = new Blob([new STLExporter().parse(terrainMesh,{binary:false})], {type:'text/plain'});
-  const u = URL.createObjectURL(b); const a = document.createElement('a');
-  a.href = u; a.download = 'terrain_model.stl'; a.click(); URL.revokeObjectURL(u);
-  toast('STL exportado');
-});
-
-$('#exportSvg').addEventListener('click', () => {
-  if (!terrainMesh) { toast('Primero generá el terreno'); return; }
-  const N = state.layers, W=800, H=800;
-  const parts = [];
-  for (let l=1; l<=N; l++) {
-    const th = l/N; const segs = [];
-    for (let z=0;z<RES-1;z++) for (let x=0;x<RES-1;x++) {
-      const v00=baseHeightData[z*RES+x], v10=baseHeightData[z*RES+(x+1)], v01=baseHeightData[(z+1)*RES+x], v11=baseHeightData[(z+1)*RES+(x+1)];
-      const bits=(v00>=th?8:0)|(v10>=th?4:0)|(v01>=th?2:0)|(v11>=th?1:0);
-      if (bits===0||bits===15) continue;
-      const xf=g=>((g/(RES-1))-0.5)*W*0.85+W/2, yf=g=>((g/(RES-1))-0.5)*H*0.85+H/2;
-      const cx=xf(x), nx=xf(x+1), cy=yf(z), ny=yf(z+1);
-      const ip=(a,b,t)=>a+(b-a)*t;
-      const ei=e=>{switch(e){case 0:return[ip(cx,nx,(th-v00)/(v10-v00)),cy];case 1:return[nx,ip(cy,ny,(th-v10)/(v11-v10))];case 2:return[ip(cx,nx,(th-v01)/(v11-v01)),ny];case 3:return[cx,ip(cy,ny,(th-v00)/(v01-v00))];default:return[0,0];}};
-      const ec={1:[[3,2]],2:[[1,0]],3:[[3,1]],4:[[0,2]],5:[[0,2],[3,1]],6:[[0,0]],7:[[1,2]],8:[[0,1]],9:[[0,1]],10:[[1,3],[0,2]],11:[[1,2]],12:[[3,0]],13:[[1,3]],14:[[3,0]]};
-      const es=ec[bits]; if (!es) continue;
-      for (const [e1,e2] of es) { const [x1,y1]=ei(e1),[x2,y2]=ei(e2); segs.push({x1,y1,x2,y2}); }
-    }
-    if (segs.length===0) continue;
-    let d = ''; for (const s of segs) d += `M${s.x1.toFixed(1)},${s.y1.toFixed(1)}L${s.x2.toFixed(1)},${s.y2.toFixed(1)}`;
-    const cl = `hsl(${200-(l/N)*200},70%,50%)`;
-    parts.push(`<path d="${d}" fill="none" stroke="${cl}" stroke-width="1.5" opacity="0.7"/><text x="20" y="${30+l*20}" font-size="10" fill="${cl}" font-family="sans-serif">Capa ${l}</text>`);
-  }
-  if (parts.length===0) { toast('No hay suficientes capas'); return; }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${parts.join('\n')}</svg>`;
-  const b = new Blob([svg], {type:'image/svg+xml'}); const u=URL.createObjectURL(b);
-  const a = document.createElement('a'); a.href=u; a.download=`terrain_layers_${N}.svg`; a.click(); URL.revokeObjectURL(u);
-  toast(`SVG con ${N} capas exportado`);
-});
-
-$('#exportGlb').addEventListener('click', () => {
-  if (!terrainMesh) { toast('Primero generá el terreno'); return; }
-  loadingOverlay.classList.add('show');
-  const exporter = new GLTFExporter();
-  const opt = { binary: true, trs: false, onlyVisible: true, includeCustomExtensions: false };
-  exporter.parse(terrainMesh, glb => {
-    const b = new Blob([glb], {type:'application/octet-stream'});
-    const u = URL.createObjectURL(b); const a = document.createElement('a');
-    a.href = u; a.download = 'terrain_model.glb'; a.click(); URL.revokeObjectURL(u);
-    loadingOverlay.classList.remove('show');
-    toast('GLB exportado');
-  }, e => { loadingOverlay.classList.remove('show'); toast('Error exportando GLB'); }, opt);
-});
-
-// ═══════════════════════════════════════════════════════
-// UI BINDINGS
-// ═══════════════════════════════════════════════════════
-document.querySelectorAll('.paint-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.paint-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active'); state.tool = btn.dataset.tool;
-  });
-});
-
-const $layers = $('#layers'), $maxH = $('#maxHeight'), $smooth = $('#smoothing');
-const $brillo = $('#brillo'), $constraste = $('#contraste');
-const $brushSize = $('#brushSize'), $brushFlow = $('#brushFlow'), $brushStrength = $('#brushStrength');
-const $resolution = $('#resolution');
-const $sizeX = $('#sizeX'), $sizeZ = $('#sizeZ');
-
-$layers.addEventListener('input', () => { state.layers = parseInt($layers.value); $('#layersVal').textContent = state.layers; scheduleRebuild(); });
-$maxH.addEventListener('input', () => { state.maxHeight = parseFloat($maxH.value); $('#heightVal').textContent = state.maxHeight.toFixed(1); scheduleRebuild(); });
-$sizeX.addEventListener('input', () => { state.sizeX = parseFloat($sizeX.value); $('#sizeXVal').textContent = state.sizeX.toFixed(1); scheduleRebuild(); });
-$sizeZ.addEventListener('input', () => { state.sizeZ = parseFloat($sizeZ.value); $('#sizeZVal').textContent = state.sizeZ.toFixed(1); scheduleRebuild(); });
-$smooth.addEventListener('input', () => { state.smoothing = parseInt($smooth.value); $('#smoothVal').textContent = state.smoothing; scheduleRebuild(); });
-$brillo.addEventListener('input', () => { state.brillo = parseFloat($brillo.value); $('#brilloVal').textContent = state.brillo.toFixed(2); scheduleRebuild(); });
-$constraste.addEventListener('input', () => { state.contraste = parseFloat($constraste.value); $('#contrasteVal').textContent = state.contraste.toFixed(2); scheduleRebuild(); });
-
-$resolution.addEventListener('input', () => {
-  state.resolution = parseInt($resolution.value);
-  $('#resolutionVal').textContent = state.resolution;
-  loadingOverlay.classList.add('show');
-  reallocateData(state.resolution);
-  drawCanvas();
-  if (threeReady) requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
-});
-
-$brushSize.addEventListener('input', () => { state.brushSize = parseInt($brushSize.value); $('#brushSizeVal').textContent = state.brushSize; });
-$brushFlow.addEventListener('input', () => { state.brushFlow = parseInt($brushFlow.value); $('#brushFlowVal').textContent = state.brushFlow; });
-$brushStrength.addEventListener('input', () => { state.brushStrength = parseInt($brushStrength.value) / 100; $('#brushStrengthVal').textContent = $brushStrength.value; });
-
-// Add color picker bindings
-const $baseColor = $('#baseColorPicker');
-const $paintColor = $('#paintColorPicker');
-$baseColor.addEventListener('input', () => {
-  state.baseColor = $baseColor.value;
-  // Re-init colorData with new base color
-  const base = new THREE.Color(state.baseColor);
-  for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
-  scheduleRebuild();
-});
-$paintColor.addEventListener('input', () => {
-  state.paintColor = $paintColor.value;
-});
-
-// Update mesh vertex colors after color painting (fast path)
-function updateMeshColors() {
-  if (!terrainMesh || state.viewMode === 'heat') return;
-  const colorAttr = terrainMesh.geometry.getAttribute('color');
-  if (!colorAttr) return;
-  const arr = colorAttr.array;
-  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const idx = (z*RES+x)*3;
-    arr[idx] = colorData[idx];
-    arr[idx+1] = colorData[idx+1];
-    arr[idx+2] = colorData[idx+2];
-  }
-  colorAttr.needsUpdate = true;
-}
-
-$('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('show'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
-$('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
-
-// ═══════════════════════════════════════════════════════
-// PRESETS: SAVE / LOAD via API
-// ═══════════════════════════════════════════════════════
-// Cambiá API_BASE a la URL del VPS cuando deployes el frontend standalone
-const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
-  ? window.location.origin
-  : 'https://vps-4455523-x.dattaweb.com/3dlayerterraingenerator';
-
-const $presetName = $('#presetName');
-const $presetGrid = $('#presetGrid');
-const $savePresetBtn = $('#savePresetBtn');
-
-function getStateSnapshot() {
-  return {
-    layers: state.layers,
-    maxHeight: state.maxHeight,
-    sizeX: state.sizeX,
-    sizeZ: state.sizeZ,
-    smoothing: state.smoothing,
-    brillo: state.brillo,
-    contraste: state.contraste,
-    resolution: state.resolution,
-    tool: state.tool,
-    brushSize: state.brushSize,
-    brushFlow: state.brushFlow,
-    brushStrength: state.brushStrength,
-    viewMode: state.viewMode,
-    activeTerrain: state.activeTerrain,
-    paint3d: state.paint3d,
-    baseColor: state.baseColor,
-    paintColor: state.paintColor,
-  };
-}
-
-function applyStateSnapshot(params) {
-  if (!params) return;
-  if (params.layers !== undefined) { state.layers = params.layers; $('#layers').value = params.layers; $('#layersVal').textContent = params.layers; }
-  if (params.maxHeight !== undefined) { state.maxHeight = params.maxHeight; $('#maxHeight').value = params.maxHeight; $('#heightVal').textContent = params.maxHeight.toFixed(1); }
-  if (params.sizeX !== undefined) { state.sizeX = params.sizeX; $('#sizeX').value = params.sizeX; $('#sizeXVal').textContent = params.sizeX.toFixed(1); }
-  if (params.sizeZ !== undefined) { state.sizeZ = params.sizeZ; $('#sizeZ').value = params.sizeZ; $('#sizeZVal').textContent = params.sizeZ.toFixed(1); }
-  if (params.smoothing !== undefined) { state.smoothing = params.smoothing; $('#smoothing').value = params.smoothing; $('#smoothVal').textContent = params.smoothing; }
-  if (params.brillo !== undefined) { state.brillo = params.brillo; $('#brillo').value = params.brillo; $('#brilloVal').textContent = params.brillo.toFixed(2); }
-  if (params.contraste !== undefined) { state.contraste = params.contraste; $('#contraste').value = params.contraste; $('#contrasteVal').textContent = params.contraste.toFixed(2); }
-  if (params.resolution !== undefined && params.resolution !== RES) {
-    state.resolution = params.resolution; $('#resolution').value = params.resolution; $('#resolutionVal').textContent = params.resolution;
-    reallocateData(params.resolution);
-  }
-  if (params.tool !== undefined) { state.tool = params.tool; document.querySelectorAll('.paint-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === params.tool)); }
-  if (params.brushSize !== undefined) { state.brushSize = params.brushSize; $('#brushSize').value = params.brushSize; $('#brushSizeVal').textContent = params.brushSize; }
-  if (params.brushFlow !== undefined) { state.brushFlow = params.brushFlow; $('#brushFlow').value = params.brushFlow; $('#brushFlowVal').textContent = params.brushFlow; }
-  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; const pct = Math.round(params.brushStrength * 100); $('#brushStrength').value = pct; $('#brushStrengthVal').textContent = pct; }
-  if (params.viewMode !== undefined && params.viewMode !== state.viewMode) { setViewMode(params.viewMode); }
-  if (params.paint3d !== undefined) { state.paint3d = params.paint3d; paint3dBtn.style.borderColor = params.paint3d ? 'var(--accent)' : 'var(--border)'; paint3dBtn.style.background = params.paint3d ? 'rgba(229,83,54,0.15)' : ''; }
-  if (params.baseColor !== undefined) { state.baseColor = params.baseColor; $('#baseColorPicker').value = params.baseColor; }
-  if (params.paintColor !== undefined) { state.paintColor = params.paintColor; $('#paintColorPicker').value = params.paintColor; }
-}
-
-async function savePreset() {
-  const name = $presetName.value.trim();
-  if (!name) { toast('Escribí un nombre para el preset'); $presetName.focus(); return; }
-  const params = getStateSnapshot();
-  const payload = {
-    name: name,
-    params: params,
-    heightData: Array.from(heightData),
-    resolution: RES,
-    thumbnail: null,
-  };
-  try {
-    const res = await fetch(API_BASE + '/api/terrain', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) { toast('Error al guardar preset'); return; }
-    toast('Preset "' + name + '" guardado');
-    $presetName.value = '';
-    loadPresets();
-  } catch (e) {
-    toast('Error de conexión al guardar preset');
-    console.error(e);
-  }
-}
-
-async function loadPresets() {
-  try {
-    const res = await fetch(API_BASE + '/api/terrains');
-    if (!res.ok) { $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error al cargar presets</div>'; return; }
-    const list = await res.json();
-    if (!list.length) {
-      $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>';
-      return;
-    }
-    $presetGrid.innerHTML = '';
-    for (const item of list) {
-      const div = document.createElement('div'); div.className = 'preset-item';
-      const dateStr = item.id ? item.id.slice(0, 10) : '';
-      const d = document.createElement('span'); d.className = 'p-date'; d.textContent = dateStr;
-      const n = document.createElement('span'); n.className = 'p-name'; n.textContent = item.name || item.id;
-      const load = document.createElement('button'); load.className = 'p-load'; load.textContent = 'Cargar';
-      load.addEventListener('click', e => { e.stopPropagation(); loadPreset(item.id); });
-      const del = document.createElement('button'); del.className = 'p-del'; del.textContent = '✕';
-      del.addEventListener('click', e => { e.stopPropagation(); deletePreset(item.id); });
-      div.appendChild(d); div.appendChild(n); div.appendChild(load); div.appendChild(del);
-      $presetGrid.appendChild(div);
-    }
-  } catch (e) {
-    $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error de conexión</div>';
-    console.error(e);
-  }
-}
-
-async function loadPreset(id) {
-  loadingOverlay.classList.add('show');
-  try {
-    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id));
-    if (!res.ok) { toast('Error al cargar preset'); loadingOverlay.classList.remove('show'); return; }
-    const data = await res.json();
-    if (data.heightData && data.resolution) {
-      if (data.resolution !== RES) {
-        reallocateData(data.resolution);
-      }
-      heightData.set(new Float32Array(data.heightData));
-      baseHeightData.set(heightData);
-    }
-    if (data.params) applyStateSnapshot(data.params);
-    needsRegen = true;
-    drawCanvas();
-    requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
-    toast('Preset "' + (data.name || id) + '" cargado');
-  } catch (e) {
-    toast('Error de conexión al cargar preset');
-    loadingOverlay.classList.remove('show');
-    console.error(e);
-  }
-}
-
-async function deletePreset(id) {
-  try {
-    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id), { method: 'DELETE' });
-    if (!res.ok) { toast('Error al eliminar preset'); return; }
-    toast('Preset eliminado');
-    loadPresets();
-  } catch (e) {
-    toast('Error de conexión al eliminar');
-    console.error(e);
-  }
-}
-
-$savePresetBtn.addEventListener('click', savePreset);
-$presetName.addEventListener('keydown', e => { if (e.key === 'Enter') savePreset(); });
-
-// Load presets list on boot
-setTimeout(() => loadPresets(), 500);
-loadTerrain('san-juan');
-initThree();
-</script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
