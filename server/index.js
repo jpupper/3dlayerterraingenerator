@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -6,6 +7,15 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 4938;
 const BASE_PATH = process.env.BASE_PATH || '';
+
+// CORS - allow frontend from any origin
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
+}));
+app.options('*', cors());
 
 // --- Config ---
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');

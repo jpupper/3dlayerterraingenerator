@@ -83,6 +83,22 @@
   .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:rgba(24,24,31,0.95); backdrop-filter:blur(12px); border:1px solid var(--border); border-radius:10px; padding:8px 18px; font-size:12px; color:var(--text); opacity:0; transition:all 0.4s ease; pointer-events:none; z-index:999; }
   .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 
+  .preset-input-row { display:flex; gap:5px; margin-bottom:8px; }
+  .preset-input-row input { flex:1; padding:6px 8px; border-radius:5px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:11px; outline:none; }
+  .preset-input-row input:focus { border-color:var(--accent); }
+  .preset-input-row .btn { width:auto; padding:6px 10px; flex:0 0 auto; }
+  .preset-grid { display:flex; flex-direction:column; gap:4px; max-height:200px; overflow-y:auto; }
+  .preset-grid::-webkit-scrollbar { width:3px; }
+  .preset-grid::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+  .preset-item { display:flex; align-items:center; gap:5px; padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:rgba(255,255,255,0.02); cursor:pointer; transition:0.2s; }
+  .preset-item:hover { border-color:var(--text2); background:rgba(255,255,255,0.05); }
+  .preset-item .p-name { flex:1; font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .preset-item .p-date { font-size:9px; color:var(--text2); margin-right:4px; flex-shrink:0; }
+  .preset-item .p-del { background:none; border:none; color:var(--text2); cursor:pointer; font-size:13px; padding:0 2px; line-height:1; transition:0.2s; flex-shrink:0; }
+  .preset-item .p-del:hover { color:var(--accent); }
+  .preset-item .p-load { background:none; border:none; color:var(--accent2); cursor:pointer; font-size:10px; padding:2px 6px; border-radius:4px; transition:0.2s; flex-shrink:0; font-weight:600; }
+  .preset-item .p-load:hover { background:rgba(74,158,255,0.15); }
+
   .loading-overlay { position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); font-size:13px; color:var(--text2); gap:8px; pointer-events:none; opacity:0; transition:0.3s; }
   .loading-overlay.show { opacity:1; }
   .spinner { width:18px; height:18px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
@@ -158,6 +174,18 @@
         <div class="section-title">Acciones</div>
         <div class="btn-group"><button class="btn btn-primary" id="applyBtn">🔄 Aplicar pincel</button><button class="btn" id="resetHeightBtn">🗑 Reset</button></div>
         <div class="btn-group" style="margin-top:5px;"><button class="btn" id="exportGlb">🌐 GLB</button><button class="btn btn-green" id="exportStl">📦 STL</button><button class="btn" id="exportSvg">📐 SVG capas</button></div>
+      </div>
+
+      <!-- ═══ PRESETS ═══ -->
+      <div class="section">
+        <div class="section-title">Presets Guardados</div>
+        <div class="preset-input-row">
+          <input type="text" id="presetName" placeholder="Nombre del preset..." maxlength="64">
+          <button class="btn btn-primary" id="savePresetBtn">💾 Guardar</button>
+        </div>
+        <div class="preset-grid" id="presetGrid">
+          <div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>
+        </div>
       </div>
 
       <div style="font-size:9px;color:var(--text2);text-align:center;padding:10px 0;border-top:1px solid var(--border);margin:0 -16px;margin-top:6px;">Caminos y Sabores · San Juan · Argentina</div>
@@ -875,9 +903,151 @@ $('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('s
 $('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
 
 // ═══════════════════════════════════════════════════════
-// BOOT
+// PRESETS: SAVE / LOAD via API
 // ═══════════════════════════════════════════════════════
-buildTerrainLibrary();
+// Cambiá API_BASE a la URL del VPS cuando deployes el frontend standalone
+const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+  ? window.location.origin
+  : 'https://vps-4455523-x.dattaweb.com/3dlayerterraingenerator';
+
+const $presetName = $('#presetName');
+const $presetGrid = $('#presetGrid');
+const $savePresetBtn = $('#savePresetBtn');
+
+function getStateSnapshot() {
+  return {
+    layers: state.layers,
+    maxHeight: state.maxHeight,
+    smoothing: state.smoothing,
+    brillo: state.brillo,
+    contraste: state.contraste,
+    resolution: state.resolution,
+    tool: state.tool,
+    brushSize: state.brushSize,
+    brushFlow: state.brushFlow,
+    brushStrength: state.brushStrength,
+    viewMode: state.viewMode,
+    activeTerrain: state.activeTerrain,
+    paint3d: state.paint3d,
+  };
+}
+
+function applyStateSnapshot(params) {
+  if (!params) return;
+  if (params.layers !== undefined) { state.layers = params.layers; $('#layers').value = params.layers; $('#layersVal').textContent = params.layers; }
+  if (params.maxHeight !== undefined) { state.maxHeight = params.maxHeight; $('#maxHeight').value = params.maxHeight; $('#heightVal').textContent = params.maxHeight.toFixed(1); }
+  if (params.smoothing !== undefined) { state.smoothing = params.smoothing; $('#smoothing').value = params.smoothing; $('#smoothVal').textContent = params.smoothing; }
+  if (params.brillo !== undefined) { state.brillo = params.brillo; $('#brillo').value = params.brillo; $('#brilloVal').textContent = params.brillo.toFixed(2); }
+  if (params.contraste !== undefined) { state.contraste = params.contraste; $('#contraste').value = params.contraste; $('#contrasteVal').textContent = params.contraste.toFixed(2); }
+  if (params.resolution !== undefined && params.resolution !== RES) {
+    state.resolution = params.resolution; $('#resolution').value = params.resolution; $('#resolutionVal').textContent = params.resolution;
+    reallocateData(params.resolution);
+  }
+  if (params.tool !== undefined) { state.tool = params.tool; document.querySelectorAll('.paint-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === params.tool)); }
+  if (params.brushSize !== undefined) { state.brushSize = params.brushSize; $('#brushSize').value = params.brushSize; $('#brushSizeVal').textContent = params.brushSize; }
+  if (params.brushFlow !== undefined) { state.brushFlow = params.brushFlow; $('#brushFlow').value = params.brushFlow; $('#brushFlowVal').textContent = params.brushFlow; }
+  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; const pct = Math.round(params.brushStrength * 100); $('#brushStrength').value = pct; $('#brushStrengthVal').textContent = pct; }
+  if (params.viewMode !== undefined && params.viewMode !== state.viewMode) { setViewMode(params.viewMode); }
+  if (params.paint3d !== undefined) { state.paint3d = params.paint3d; paint3dBtn.style.borderColor = params.paint3d ? 'var(--accent)' : 'var(--border)'; paint3dBtn.style.background = params.paint3d ? 'rgba(229,83,54,0.15)' : ''; }
+}
+
+async function savePreset() {
+  const name = $presetName.value.trim();
+  if (!name) { toast('Escribí un nombre para el preset'); $presetName.focus(); return; }
+  const params = getStateSnapshot();
+  const payload = {
+    name: name,
+    params: params,
+    heightData: Array.from(heightData),
+    resolution: RES,
+    thumbnail: null,
+  };
+  try {
+    const res = await fetch(API_BASE + '/api/terrain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { toast('Error al guardar preset'); return; }
+    toast('Preset "' + name + '" guardado');
+    $presetName.value = '';
+    loadPresets();
+  } catch (e) {
+    toast('Error de conexión al guardar preset');
+    console.error(e);
+  }
+}
+
+async function loadPresets() {
+  try {
+    const res = await fetch(API_BASE + '/api/terrains');
+    if (!res.ok) { $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error al cargar presets</div>'; return; }
+    const list = await res.json();
+    if (!list.length) {
+      $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>';
+      return;
+    }
+    $presetGrid.innerHTML = '';
+    for (const item of list) {
+      const div = document.createElement('div'); div.className = 'preset-item';
+      const dateStr = item.id ? item.id.slice(0, 10) : '';
+      const d = document.createElement('span'); d.className = 'p-date'; d.textContent = dateStr;
+      const n = document.createElement('span'); n.className = 'p-name'; n.textContent = item.name || item.id;
+      const load = document.createElement('button'); load.className = 'p-load'; load.textContent = 'Cargar';
+      load.addEventListener('click', e => { e.stopPropagation(); loadPreset(item.id); });
+      const del = document.createElement('button'); del.className = 'p-del'; del.textContent = '✕';
+      del.addEventListener('click', e => { e.stopPropagation(); deletePreset(item.id); });
+      div.appendChild(d); div.appendChild(n); div.appendChild(load); div.appendChild(del);
+      $presetGrid.appendChild(div);
+    }
+  } catch (e) {
+    $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error de conexión</div>';
+    console.error(e);
+  }
+}
+
+async function loadPreset(id) {
+  loadingOverlay.classList.add('show');
+  try {
+    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id));
+    if (!res.ok) { toast('Error al cargar preset'); loadingOverlay.classList.remove('show'); return; }
+    const data = await res.json();
+    if (data.heightData && data.resolution) {
+      if (data.resolution !== RES) {
+        reallocateData(data.resolution);
+      }
+      heightData.set(new Float32Array(data.heightData));
+      baseHeightData.set(heightData);
+    }
+    if (data.params) applyStateSnapshot(data.params);
+    needsRegen = true;
+    drawCanvas();
+    requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
+    toast('Preset "' + (data.name || id) + '" cargado');
+  } catch (e) {
+    toast('Error de conexión al cargar preset');
+    loadingOverlay.classList.remove('show');
+    console.error(e);
+  }
+}
+
+async function deletePreset(id) {
+  try {
+    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!res.ok) { toast('Error al eliminar preset'); return; }
+    toast('Preset eliminado');
+    loadPresets();
+  } catch (e) {
+    toast('Error de conexión al eliminar');
+    console.error(e);
+  }
+}
+
+$savePresetBtn.addEventListener('click', savePreset);
+$presetName.addEventListener('keydown', e => { if (e.key === 'Enter') savePreset(); });
+
+// Load presets list on boot
+setTimeout(() => loadPresets(), 500);
 loadTerrain('san-juan');
 initThree();
 </script>
