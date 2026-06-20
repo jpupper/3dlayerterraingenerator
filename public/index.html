@@ -148,10 +148,17 @@
           <button class="paint-btn active" data-tool="add">⬆ Subir</button>
           <button class="paint-btn" data-tool="sub">⬇ Bajar</button>
           <button class="paint-btn" data-tool="smooth">🌊 Suavizar</button>
+          <button class="paint-btn" data-tool="color">🎨 Color</button>
         </div>
         <div class="row2"><label>Ø</label><input type="range" id="brushSize" min="3" max="80" value="20"><span class="val" id="brushSizeVal">20</span></div>
         <div class="row2"><label>Flujo</label><input type="range" id="brushFlow" min="1" max="100" value="30"><span class="val" id="brushFlowVal">30</span></div>
         <div class="row2"><label>Fuerza</label><input type="range" id="brushStrength" min="-100" max="100" value="30"><span class="val" id="brushStrengthVal">30</span></div>
+        <div class="row2" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">
+          <label>Color base</label>
+          <input type="color" id="baseColorPicker" value="#c4a265" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
+          <label style="min-width:auto;">Pincel</label>
+          <input type="color" id="paintColorPicker" value="#e55336" style="width:36px;height:28px;border:1px solid var(--border);border-radius:4px;background:transparent;padding:2px;cursor:pointer;flex-shrink:0;">
+        </div>
       </div>
 
       <!-- ═══ PARAMS ═══ -->
@@ -165,7 +172,9 @@
         <div class="section-title">Topografía</div>
         <div class="control-group"><div class="control-label"><span>Resolución</span><span class="value" id="resolutionVal">128</span></div><input type="range" id="resolution" min="32" max="2048" value="128" step="8"></div>
         <div class="control-group"><div class="control-label"><span>Capas (N)</span><span class="value" id="layersVal">15</span></div><input type="range" id="layers" min="3" max="30" value="15"></div>
-        <div class="control-group"><div class="control-label"><span>Altura máx</span><span class="value" id="heightVal">3.0</span></div><input type="range" id="maxHeight" min="0.5" max="8" value="3" step="0.1"></div>
+        <div class="control-group"><div class="control-label"><span>Altura máx</span><span class="value" id="heightVal">3.0</span></div><input type="range" id="maxHeight" min="0.5" max="15" value="3" step="0.1"></div>
+        <div class="control-group"><div class="control-label"><span>Tamaño X (ancho)</span><span class="value" id="sizeXVal">5.0</span></div><input type="range" id="sizeX" min="1" max="20" value="5" step="0.1"></div>
+        <div class="control-group"><div class="control-label"><span>Tamaño Z (fondo)</span><span class="value" id="sizeZVal">5.0</span></div><input type="range" id="sizeZ" min="1" max="20" value="5" step="0.1"></div>
         <div class="control-group"><div class="control-label"><span>Suavizado</span><span class="value" id="smoothVal">2</span></div><input type="range" id="smoothing" min="0" max="8" value="2" step="1"></div>
       </div>
 
@@ -234,9 +243,14 @@ let rebuildPending = false;
 const state = {
   layers:15, maxHeight:3.0, smoothing:2,
   brillo:0, contraste:1, resolution:128,
+  sizeX:5, sizeZ:5,
   tool:'add', brushSize:20, brushFlow:30, brushStrength:0.3,
   viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
+  baseColor:'#c4a265', paintColor:'#e55336',
 };
+
+let vertexColors = null;
+let colorData = null;
 
 let threeReady = false;
 let terrainMesh = null;
@@ -511,7 +525,8 @@ function loadFile(file) {
 function initThree() {
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a12);
   camera = new THREE.PerspectiveCamera(40, viewport.clientWidth/viewport.clientHeight, 0.1, 100);
-  camera.position.set(6, 5, 8);
+  const camDist = Math.max(state.sizeX, state.sizeZ) * 1.8;
+  camera.position.set(camDist * 0.7, camDist * 0.6, camDist);
   renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setSize(viewport.clientWidth, viewport.clientHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));
@@ -522,7 +537,7 @@ function initThree() {
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = 0.08;
-  controls.minDistance = 1.5; controls.maxDistance = 25;
+  controls.minDistance = 1.5; controls.maxDistance = Math.max(state.sizeX, state.sizeZ) * 4;
   controls.target.set(0, 0, 0); controls.update();
 
   scene.add(new THREE.AmbientLight(0x404060, 0.6));
@@ -531,14 +546,15 @@ function initThree() {
   dl.position.set(8,15,5); dl.castShadow = true;
   dl.shadow.mapSize.width = 1024; dl.shadow.mapSize.height = 1024;
   dl.shadow.camera.near = 0.1; dl.shadow.camera.far = 30;
-  dl.shadow.camera.left = -10; dl.shadow.camera.right = 10;
-  dl.shadow.camera.top = 10; dl.shadow.camera.bottom = -10;
+  const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
+  dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
+  dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
+  dl.shadow.camera.far = shMax * 3;
   scene.add(dl);
   const fl = new THREE.DirectionalLight(0x8888ff, 0.5); fl.position.set(-5,3,-5); scene.add(fl);
 
-  // Ruler group (measurement markers)
-  const scale = 5;
-  buildRuler(scale);
+  // Ruler group (measurement grid)
+  buildRuler(state.sizeX, state.sizeZ);
 
   // Brush ring cursor
   const ringGeo = new THREE.RingGeometry(0.18, 0.2, 32);
@@ -557,36 +573,112 @@ function initThree() {
   new ResizeObserver(() => { const w=viewport.clientWidth,h=viewport.clientHeight; if (w>0&&h>0) { camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); }}).observe(viewport);
 }
 
-function buildRuler(scale) {
+function makeTextSprite(text, color='#8caadf', size=0.3) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 80;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'Bold 36px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = color; ctx.fillText(text, 128, 42);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, opacity: 0.85, sizeAttenuation: true });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(size * 4, size * 1.2, 1);
+  return sprite;
+}
+
+function buildRuler(sizeX, sizeZ) {
   if (rulerGroup) { scene.remove(rulerGroup); rulerGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); }); }
   rulerGroup = new THREE.Group();
-  const h = scale / 2;
-  const mat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.4 });
-  const tickMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.3 });
 
-  // Perimeter
-  const pts = [new THREE.Vector3(-h,0,-h), new THREE.Vector3(h,0,-h), new THREE.Vector3(h,0,h), new THREE.Vector3(-h,0,h), new THREE.Vector3(-h,0,-h)];
-  const perimeter = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+  const hx = sizeX / 2, hz = sizeZ / 2;
+
+  // --- Grid lines ---
+  const gridMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.12 });
+  const gridStep = 0.5;
+  const gridLines = [];
+  // Lines along X
+  for (let z = -hz; z <= hz + 0.001; z += gridStep) {
+    gridLines.push(new THREE.Vector3(-hx, 0, z), new THREE.Vector3(hx, 0, z));
+  }
+  // Lines along Z
+  for (let x = -hx; x <= hx + 0.001; x += gridStep) {
+    gridLines.push(new THREE.Vector3(x, 0, -hz), new THREE.Vector3(x, 0, hz));
+  }
+  const gridGeo = new THREE.BufferGeometry().setFromPoints(gridLines);
+  const gridLine = new THREE.LineSegments(gridGeo, gridMat);
+  rulerGroup.add(gridLine);
+
+  // --- Perimeter (thicker) ---
+  const perimMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.5 });
+  const pts = [
+    new THREE.Vector3(-hx,0,-hz), new THREE.Vector3(hx,0,-hz),
+    new THREE.Vector3(hx,0,hz), new THREE.Vector3(-hx,0,hz), new THREE.Vector3(-hx,0,-hz)
+  ];
+  const perimeter = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), perimMat);
   rulerGroup.add(perimeter);
 
-  // Tick marks every 0.5 units
-  for (let t = -h + 0.5; t < h; t += 0.5) {
-    const tickSize = (Math.abs(t) < 0.01) ? 0.15 : 0.08;
-    for (const [x0,z0,x1,z1] of [[t,-h,t,-h+tickSize],[t,h,t,h-tickSize],[-h,t,-h+tickSize,t],[h,t,h-tickSize,t]]) {
-      const tick = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x0,0,z0), new THREE.Vector3(x1,0,z1)]),
-        tickMat
-      );
-      rulerGroup.add(tick);
+  // --- Tick marks on perimeter ---
+  const tickMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.4 });
+  const tickLen = 0.12;
+  for (let t = -hz + gridStep; t < hz; t += gridStep) {
+    const sz = (Math.abs(t) < 0.01) ? tickLen * 2 : tickLen;
+    for (const pts2 of [[-hx,t,-hx+sz,t],[hx,t,hx-sz,t]]) {
+      rulerGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(pts2[0],0,pts2[1]), new THREE.Vector3(pts2[2],0,pts2[3])]), tickMat));
     }
   }
+  for (let t = -hx + gridStep; t < hx; t += gridStep) {
+    const sz = (Math.abs(t) < 0.01) ? tickLen * 2 : tickLen;
+    for (const pts2 of [[t,-hz,t,-hz+sz],[t,hz,t,hz-sz]]) {
+      rulerGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(pts2[0],0,pts2[1]), new THREE.Vector3(pts2[2],0,pts2[3])]), tickMat));
+    }
+  }
+
+  // --- Dimension labels ---
+  // Width label (X axis)
+  const lblW = makeTextSprite(sizeX.toFixed(1) + 'cm', '#8caadf', 0.35);
+  lblW.position.set(0, 0.05, -hz - 0.6);
+  rulerGroup.add(lblW);
+  // Label arrow line
+  const arrMat1 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
+  const arr1 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-hx, 0.02, -hz - 0.3), new THREE.Vector3(hx, 0.02, -hz - 0.3)
+  ]), arrMat1);
+  rulerGroup.add(arr1);
+
+  // Depth label (Z axis)
+  const lblD = makeTextSprite(sizeZ.toFixed(1) + 'cm', '#8caadf', 0.35);
+  lblD.position.set(hx + 0.6, 0.05, 0);
+  rulerGroup.add(lblD);
+  const arrMat2 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
+  const arr2 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(hx + 0.3, 0.02, -hz), new THREE.Vector3(hx + 0.3, 0.02, hz)
+  ]), arrMat2);
+  rulerGroup.add(arr2);
+
+  // Height label (Y axis) - vertical line near front-left corner
+  const maxH = state.maxHeight;
+  const arrMat3 = new THREE.LineBasicMaterial({ color: 0xcf8a6f, transparent: true, opacity: 0.4 });
+  const arr3 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-hx - 0.3, 0, -hz), new THREE.Vector3(-hx - 0.3, maxH, -hz)
+  ]), arrMat3);
+  rulerGroup.add(arr3);
+  // Top tick
+  const tickH = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-hx - 0.45, maxH, -hz), new THREE.Vector3(-hx - 0.15, maxH, -hz)
+  ]), arrMat3);
+  rulerGroup.add(tickH);
+  const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', 0.3);
+  lblH.position.set(-hx - 0.7, maxH * 0.5, -hz);
+  rulerGroup.add(lblH);
+
   rulerGroup.position.y = 0.01;
   scene.add(rulerGroup);
 }
 
 function updateDimOverlay() {
-  const scale = 5;
-  const w = (scale).toFixed(1), d = (scale).toFixed(1);
+  const w = state.sizeX.toFixed(1), d = state.sizeZ.toFixed(1);
   const maxH = state.maxHeight.toFixed(1);
   const el = $('#dimOverlay');
   if (el) el.textContent = `📐 ${w}cm × ${d}cm · Altura máx ${maxH}cm · Capas ${state.layers}`;
@@ -621,22 +713,39 @@ function rebuildTerrain() {
   const quantized = new Float32Array(RES*RES);
   for (let i = 0; i < RES*RES; i++) quantized[i] = Math.floor(baseHeightData[i] * N) / N;
 
-  const scale = 5, hScale = state.maxHeight;
+  // Initialize colorData if needed
+  if (!colorData || colorData.length !== RES*RES*3) {
+    colorData = new Float32Array(RES*RES*3);
+    const base = new THREE.Color(state.baseColor || '#c4a265');
+    for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
+  }
+
+  const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight;
   const positions = [], indices = [], colors = [];
 
   const cr = t => {
     const c = new THREE.Color();
-    if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
-    else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
-    else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
-    else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
+    if (state.viewMode === 'heat') {
+      if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
+      else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
+      else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
+      else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
+    } else {
+      // Use vertex colors (painted or base color)
+      const idx = (Math.floor(t * (RES*RES-1)))*3; // fallback - will be overwritten below
+    }
     return c;
   };
 
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
     const h = quantized[z*RES+x];
-    positions.push((x/(RES-1)-0.5)*scale, h*hScale, (z/(RES-1)-0.5)*scale);
-    const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
+    positions.push((x/(RES-1)-0.5)*scaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ);
+    if (state.viewMode === 'heat') {
+      const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
+    } else {
+      const idx = (z*RES+x)*3;
+      colors.push(colorData[idx], colorData[idx+1], colorData[idx+2]);
+    }
   }
 
   for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
@@ -655,9 +764,8 @@ function rebuildTerrain() {
   if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
 
   let mat;
-  if (state.viewMode === 'heat') mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.5, metalness:0.05, side:THREE.DoubleSide});
-  else if (state.viewMode === 'wire') mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
-  else mat = new THREE.MeshStandardMaterial({color:0xc4a265, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
+  if (state.viewMode === 'wire') mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
+  else mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
 
   terrainMesh = new THREE.Mesh(geo, mat);
   terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
@@ -666,8 +774,22 @@ function rebuildTerrain() {
   loadingOverlay.classList.remove('show');
 
   // Update ruler position and dimension overlay
-  if (rulerGroup) rulerGroup.position.y = 0.01;
+  if (rulerGroup) { scene.remove(rulerGroup); rulerGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); }); rulerGroup = null; }
+  buildRuler(state.sizeX, state.sizeZ);
   updateDimOverlay();
+
+  // Update shadow camera to fit terrain
+  const dl = scene.children.find(c => c.isDirectionalLight && c.shadow);
+  if (dl) {
+    const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
+    dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
+    dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
+    dl.shadow.camera.far = shMax * 3;
+    dl.shadow.camera.updateProjectionMatrix();
+  }
+
+  // Adjust orbit max distance
+  controls.maxDistance = Math.max(state.sizeX, state.sizeZ) * 4;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -703,15 +825,15 @@ function get3dGridPos(event) {
   const intersects = raycaster.intersectObject(terrainMesh);
   if (intersects.length === 0) return null;
   const pt = intersects[0].point;
-  const scale = 5;
-  const gx = Math.round(((pt.x / scale) + 0.5) * (RES-1));
-  const gz = Math.round(((pt.z / scale) + 0.5) * (RES-1));
+  const sX = state.sizeX, sZ = state.sizeZ;
+  const gx = Math.round(((pt.x / sX) + 0.5) * (RES-1));
+  const gz = Math.round(((pt.z / sZ) + 0.5) * (RES-1));
   if (gx < 0 || gx >= RES || gz < 0 || gz >= RES) return null;
   return {x: gx, z: gz};
 }
 
 function paint3dAt(gx, gz) {
-  const size = state.brushSize, strength = state.brushStrength;
+  const size = state.brushSize, flow = state.brushFlow / 100;
   const radius = size / 2;
   for (let dz = -Math.ceil(radius); dz <= Math.ceil(radius); dz++) for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
     const px = gx+dx, pz = gz+dz;
@@ -720,13 +842,19 @@ function paint3dAt(gx, gz) {
     if (dist > radius) continue;
     const f = 1 - dist/radius;
     const cur = heightData[pz*RES+px];
-    const s = Math.abs(strength);
-    if (strength > 0) heightData[pz*RES+px] = Math.min(1, cur + f*s);
-    else if (strength < 0) heightData[pz*RES+px] = Math.max(0, cur - f*s);
+    if (state.tool === 'add') heightData[pz*RES+px] = Math.min(1, cur + f*flow*0.08);
+    else if (state.tool === 'sub') heightData[pz*RES+px] = Math.max(0, cur - f*flow*0.08);
     else if (state.tool === 'smooth') {
       let s2=0, n2=0;
       for (let sy=-1;sy<=1;sy++) for (let sx=-1;sx<=1;sx++) { const nx=px+sx, ny=pz+sy; if (nx>=0&&nx<RES&&ny>=0&&ny<RES) { s2+=heightData[ny*RES+nx]; n2++; } }
-      heightData[pz*RES+px] = cur + (s2/n2 - cur)*f*0.3;
+      heightData[pz*RES+px] = cur + (s2/n2 - cur)*f*flow*0.4;
+    }
+    else if (state.tool === 'color') {
+      const col = new THREE.Color(state.paintColor || '#c4a265');
+      const idx = (pz*RES+px)*3;
+      colorData[idx] = col.r;
+      colorData[idx+1] = col.g;
+      colorData[idx+2] = col.b;
     }
   }
   needsRegen = true;
@@ -735,7 +863,7 @@ function paint3dAt(gx, gz) {
 function updateMeshVertices() {
   if (!terrainMesh) return;
   baseHeightData.set(heightData);
-  const scale = 5, hScale = state.maxHeight, N = state.layers;
+  const hScale = state.maxHeight, N = state.layers;
   const posAttr = terrainMesh.geometry.getAttribute('position');
   const arr = posAttr.array;
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
@@ -761,7 +889,8 @@ function setup3dPaintEvents() {
     if (!p) return; // Not on terrain — let OrbitControls work
     controls.enabled = false;
     is3dPainting = true;
-    paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices();
+    if (state.tool === 'color') { paint3dAt(p.x, p.z); drawCanvas(); updateMeshColors(); }
+    else { paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices(); }
     updateBrushRing(e);
   });
   renderer.domElement.addEventListener('mousemove', e => {
@@ -769,7 +898,10 @@ function setup3dPaintEvents() {
     updateBrushRing(e);
     if (!is3dPainting) return;
     const p = get3dGridPos(e);
-    if (p) { paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices(); }
+    if (p) {
+      if (state.tool === 'color') { paint3dAt(p.x, p.z); drawCanvas(); updateMeshColors(); }
+      else { paint3dAt(p.x, p.z); drawCanvas(); updateMeshVertices(); }
+    }
   });
   window.addEventListener('mouseup', () => {
     if (is3dPainting) {
@@ -797,11 +929,9 @@ function setup3dPaintEvents() {
     const hits = raycaster.intersectObject(terrainMesh);
     if (hits.length > 0) {
       const pt = hits[0].point;
-      const scale = 5;
-      const wh = heightData[Math.round(((pt.z/scale)+0.5)*(RES-1))*RES + Math.round(((pt.x/scale)+0.5)*(RES-1))];
-      const qh = Math.floor(wh * state.layers) / state.layers;
-      brushRing.position.set(pt.x, qh * state.maxHeight + 0.01, pt.z);
-      const r = (state.brushSize / RES) * scale * 0.5;
+      const ringScale = (state.sizeX + state.sizeZ) / 2;
+      const r = (state.brushSize / RES) * ringScale * 0.5;
+      brushRing.position.set(pt.x, pt.y + 0.02, pt.z);
       brushRing.scale.set(r/0.2, r/0.2, 1);
       brushRing.visible = state.paint3d;
     } else {
@@ -879,9 +1009,12 @@ const $layers = $('#layers'), $maxH = $('#maxHeight'), $smooth = $('#smoothing')
 const $brillo = $('#brillo'), $constraste = $('#contraste');
 const $brushSize = $('#brushSize'), $brushFlow = $('#brushFlow'), $brushStrength = $('#brushStrength');
 const $resolution = $('#resolution');
+const $sizeX = $('#sizeX'), $sizeZ = $('#sizeZ');
 
 $layers.addEventListener('input', () => { state.layers = parseInt($layers.value); $('#layersVal').textContent = state.layers; scheduleRebuild(); });
 $maxH.addEventListener('input', () => { state.maxHeight = parseFloat($maxH.value); $('#heightVal').textContent = state.maxHeight.toFixed(1); scheduleRebuild(); });
+$sizeX.addEventListener('input', () => { state.sizeX = parseFloat($sizeX.value); $('#sizeXVal').textContent = state.sizeX.toFixed(1); scheduleRebuild(); });
+$sizeZ.addEventListener('input', () => { state.sizeZ = parseFloat($sizeZ.value); $('#sizeZVal').textContent = state.sizeZ.toFixed(1); scheduleRebuild(); });
 $smooth.addEventListener('input', () => { state.smoothing = parseInt($smooth.value); $('#smoothVal').textContent = state.smoothing; scheduleRebuild(); });
 $brillo.addEventListener('input', () => { state.brillo = parseFloat($brillo.value); $('#brilloVal').textContent = state.brillo.toFixed(2); scheduleRebuild(); });
 $constraste.addEventListener('input', () => { state.contraste = parseFloat($constraste.value); $('#contrasteVal').textContent = state.contraste.toFixed(2); scheduleRebuild(); });
@@ -898,6 +1031,35 @@ $resolution.addEventListener('input', () => {
 $brushSize.addEventListener('input', () => { state.brushSize = parseInt($brushSize.value); $('#brushSizeVal').textContent = state.brushSize; });
 $brushFlow.addEventListener('input', () => { state.brushFlow = parseInt($brushFlow.value); $('#brushFlowVal').textContent = state.brushFlow; });
 $brushStrength.addEventListener('input', () => { state.brushStrength = parseInt($brushStrength.value) / 100; $('#brushStrengthVal').textContent = $brushStrength.value; });
+
+// Add color picker bindings
+const $baseColor = $('#baseColorPicker');
+const $paintColor = $('#paintColorPicker');
+$baseColor.addEventListener('input', () => {
+  state.baseColor = $baseColor.value;
+  // Re-init colorData with new base color
+  const base = new THREE.Color(state.baseColor);
+  for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
+  scheduleRebuild();
+});
+$paintColor.addEventListener('input', () => {
+  state.paintColor = $paintColor.value;
+});
+
+// Update mesh vertex colors after color painting (fast path)
+function updateMeshColors() {
+  if (!terrainMesh || state.viewMode === 'heat') return;
+  const colorAttr = terrainMesh.geometry.getAttribute('color');
+  if (!colorAttr) return;
+  const arr = colorAttr.array;
+  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+    const idx = (z*RES+x)*3;
+    arr[idx] = colorData[idx];
+    arr[idx+1] = colorData[idx+1];
+    arr[idx+2] = colorData[idx+2];
+  }
+  colorAttr.needsUpdate = true;
+}
 
 $('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('show'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
 $('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
@@ -918,6 +1080,8 @@ function getStateSnapshot() {
   return {
     layers: state.layers,
     maxHeight: state.maxHeight,
+    sizeX: state.sizeX,
+    sizeZ: state.sizeZ,
     smoothing: state.smoothing,
     brillo: state.brillo,
     contraste: state.contraste,
@@ -929,6 +1093,8 @@ function getStateSnapshot() {
     viewMode: state.viewMode,
     activeTerrain: state.activeTerrain,
     paint3d: state.paint3d,
+    baseColor: state.baseColor,
+    paintColor: state.paintColor,
   };
 }
 
@@ -936,6 +1102,8 @@ function applyStateSnapshot(params) {
   if (!params) return;
   if (params.layers !== undefined) { state.layers = params.layers; $('#layers').value = params.layers; $('#layersVal').textContent = params.layers; }
   if (params.maxHeight !== undefined) { state.maxHeight = params.maxHeight; $('#maxHeight').value = params.maxHeight; $('#heightVal').textContent = params.maxHeight.toFixed(1); }
+  if (params.sizeX !== undefined) { state.sizeX = params.sizeX; $('#sizeX').value = params.sizeX; $('#sizeXVal').textContent = params.sizeX.toFixed(1); }
+  if (params.sizeZ !== undefined) { state.sizeZ = params.sizeZ; $('#sizeZ').value = params.sizeZ; $('#sizeZVal').textContent = params.sizeZ.toFixed(1); }
   if (params.smoothing !== undefined) { state.smoothing = params.smoothing; $('#smoothing').value = params.smoothing; $('#smoothVal').textContent = params.smoothing; }
   if (params.brillo !== undefined) { state.brillo = params.brillo; $('#brillo').value = params.brillo; $('#brilloVal').textContent = params.brillo.toFixed(2); }
   if (params.contraste !== undefined) { state.contraste = params.contraste; $('#contraste').value = params.contraste; $('#contrasteVal').textContent = params.contraste.toFixed(2); }
@@ -949,6 +1117,8 @@ function applyStateSnapshot(params) {
   if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; const pct = Math.round(params.brushStrength * 100); $('#brushStrength').value = pct; $('#brushStrengthVal').textContent = pct; }
   if (params.viewMode !== undefined && params.viewMode !== state.viewMode) { setViewMode(params.viewMode); }
   if (params.paint3d !== undefined) { state.paint3d = params.paint3d; paint3dBtn.style.borderColor = params.paint3d ? 'var(--accent)' : 'var(--border)'; paint3dBtn.style.background = params.paint3d ? 'rgba(229,83,54,0.15)' : ''; }
+  if (params.baseColor !== undefined) { state.baseColor = params.baseColor; $('#baseColorPicker').value = params.baseColor; }
+  if (params.paintColor !== undefined) { state.paintColor = params.paintColor; $('#paintColorPicker').value = params.paintColor; }
 }
 
 async function savePreset() {
