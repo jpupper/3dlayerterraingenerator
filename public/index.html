@@ -49,6 +49,7 @@
         <div class="section-title">Acciones</div>
         <div class="btn-group"><button class="btn btn-primary" id="applyBtn">🔄 Aplicar pincel</button><button class="btn" id="resetHeightBtn">🗑 Reset</button></div>
         <div class="btn-group" style="margin-top:5px;"><button class="btn" id="exportGlb">🌐 GLB</button><button class="btn btn-green" id="exportStl">📦 STL</button><button class="btn" id="exportSvg">📐 SVG capas</button></div>
+        <div class="btn-group" style="margin-top:5px;"><button class="btn" id="viewGlbBtn">👁 Ver GLB</button></div>
       </div>
 
       <div style="font-size:9px;color:var(--text2);text-align:center;padding:10px 0;border-top:1px solid var(--border);margin:0 -16px;margin-top:6px;">Caminos y Sabores · San Juan · Argentina</div>
@@ -103,7 +104,7 @@
           </div>
           <div class="row2"><label>Ø</label><input type="range" id="brushSize" min="3" max="80" value="20"><span class="val" id="brushSizeVal">20</span></div>
           <div class="row2"><label>Flujo</label><input type="range" id="brushFlow" min="1" max="100" value="30"><span class="val" id="brushFlowVal">30</span></div>
-          <div class="row2"><label>Fuerza</label><input type="range" id="brushStrength" min="-100" max="100" value="30"><span class="val" id="brushStrengthVal">30</span></div>
+          <div class="row2"><label>Fuerza</label><input type="range" id="brushStrength" min="0" max="5" value="2" step="1"><span class="val" id="brushStrengthVal">2</span></div>
         </div>
       </div>
 

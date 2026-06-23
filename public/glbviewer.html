@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GLB Viewer · Terrain Maker</title>
+<style>
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+  :root {
+    --bg: #0e0e14;   --surface: #18181f;   --surface2: #20202a;
+    --border: #2a2a38; --text: #e8e0d0;    --text2: #908a80;
+    --accent: #e55336;
+  }
+  html, body { height:100%; background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; overflow:hidden; }
+  #viewport { width:100vw; height:100vh; position:relative; }
+  #viewport canvas { display:block; }
+  .header { position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:10; display:flex; gap:8px; align-items:center; }
+  .header a { color:var(--text2); text-decoration:none; font-size:12px; padding:6px 14px; border:1px solid var(--border); border-radius:6px; background:rgba(24,24,31,0.85); backdrop-filter:blur(8px); transition:0.2s; }
+  .header a:hover { border-color:var(--accent); color:var(--text); }
+  .drop-zone { position:absolute; inset:0; z-index:20; display:flex; flex-direction:column; align-items:center; justify-content:center; background:rgba(0,0,0,0.85); transition:0.3s; cursor:pointer; }
+  .drop-zone.hidden { opacity:0; pointer-events:none; }
+  .drop-zone .icon { font-size:64px; margin-bottom:12px; }
+  .drop-zone .title { font-size:20px; font-weight:600; color:var(--text); margin-bottom:6px; }
+  .drop-zone .sub { font-size:13px; color:var(--text2); margin-bottom:16px; }
+  .drop-zone .btn { display:inline-flex; align-items:center; gap:5px; padding:8px 20px; border-radius:6px; font-size:13px; font-weight:600; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; transition:0.2s; }
+  .drop-zone .btn:hover { background:#d0482e; }
+  .drop-zone input[type=file] { display:none; }
+  .info { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); font-size:10px; color:rgba(232,224,208,0.3); pointer-events:none; z-index:5; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:rgba(24,24,31,0.95); backdrop-filter:blur(12px); border:1px solid var(--border); border-radius:10px; padding:8px 18px; font-size:12px; color:var(--text); opacity:0; transition:all 0.4s ease; pointer-events:none; z-index:999; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  @media (max-width:600px) { .header { flex-wrap:wrap; justify-content:center; } }
+</style>
+</head>
+<body>
+
+<div id="viewport"></div>
+
+<div class="header">
+  <a href="index.html">&larr; Volver al editor</a>
+  <a id="downloadBtn" style="display:none;">💾 Descargar GLB</a>
+</div>
+
+<div class="drop-zone" id="dropZone">
+  <div class="icon">🏔️</div>
+  <div class="title">Arrastrá un archivo GLB</div>
+  <div class="sub">o hacé click para seleccionarlo</div>
+  <button class="btn" id="fileBtn">📁 Seleccionar archivo</button>
+  <input type="file" id="fileInput" accept=".glb,.gltf">
+</div>
+
+<div class="info" id="infoBar">Arrastrá un archivo GLB para visualizarlo</div>
+<div class="toast" id="toast"></div>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// DOM
+const viewport = $('#viewport');
+const toastEl = $('#toast');
+const dropZone = $('#dropZone');
+const fileInput = $('#fileInput');
+const infoBar = $('#infoBar');
+const downloadBtn = $('#downloadBtn');
+let toastTimer;
+
+function $(s) { return document.querySelector(s); }
+function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500); }
+
+// Scene setup (matches main app lighting)
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a12);
+
+const camera = new THREE.PerspectiveCamera(40, viewport.clientWidth / viewport.clientHeight, 0.1, 100);
+camera.position.set(4, 3, 6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+viewport.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 1.5;
+controls.maxDistance = 40;
+controls.target.set(0, 0, 0);
+controls.update();
+
+// Lighting (same as main app)
+scene.add(new THREE.AmbientLight(0x404060, 0.6));
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0x362d1e, 0.7));
+const dl = new THREE.DirectionalLight(0xffeedd, 2.5);
+dl.position.set(8, 15, 5);
+dl.castShadow = true;
+dl.shadow.mapSize.width = 1024;
+dl.shadow.mapSize.height = 1024;
+dl.shadow.camera.near = 0.1;
+dl.shadow.camera.far = 30;
+scene.add(dl);
+const fl = new THREE.DirectionalLight(0x8888ff, 0.5);
+fl.position.set(-5, 3, -5);
+scene.add(fl);
+
+// Resize
+new ResizeObserver(() => {
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  if (w > 0 && h > 0) { camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h); }
+}).observe(viewport);
+
+// GLTF Loader
+const loader = new GLTFLoader();
+let modelGroup = null;
+
+function loadGlb(url) {
+  loader.load(url, gltf => {
+    // Remove previous model
+    if (modelGroup) { scene.remove(modelGroup); disposeModel(modelGroup); }
+
+    modelGroup = gltf.scene;
+    scene.add(modelGroup);
+
+    // Compute bounding box and auto-fit camera
+    const box = new THREE.Box3().setFromObject(modelGroup);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const dist = maxDim * 1.8;
+
+    camera.position.set(dist * 0.7, dist * 0.6, dist);
+    controls.target.copy(center);
+    controls.maxDistance = maxDim * 4;
+    controls.update();
+
+    // Enable download button
+    downloadBtn.style.display = 'inline-flex';
+    downloadBtn.href = url;
+    downloadBtn.download = 'terrain_model.glb';
+
+    dropZone.classList.add('hidden');
+    infoBar.textContent = `GLB cargado · ${(size.x.toFixed(2))} × ${(size.y.toFixed(2))} × ${(size.z.toFixed(2))}`;
+    toast('Modelo GLB cargado');
+
+    // Fix materials to use vertex colors
+    modelGroup.traverse(child => {
+      if (child.isMesh && child.material) {
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach(m => {
+          if (m.vertexColors !== undefined) {
+            m.vertexColors = true;
+            m.needsUpdate = true;
+          }
+        });
+      }
+    });
+  }, undefined, err => {
+    toast('Error cargando GLB: ' + err.message);
+    console.error(err);
+  });
+}
+
+function disposeModel(group) {
+  group.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+      else child.material.dispose();
+    }
+  });
+}
+
+// Animate
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// File drag-and-drop
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = ''; });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = '';
+  const file = e.dataTransfer.files[0];
+  if (file && (file.name.endsWith('.glb') || file.name.endsWith('.gltf'))) {
+    const url = URL.createObjectURL(file);
+    loadGlb(url);
+  } else {
+    toast('Solo archivos .glb o .gltf');
+  }
+});
+
+// File input
+$('#fileBtn').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) {
+    const url = URL.createObjectURL(fileInput.files[0]);
+    loadGlb(url);
+  }
+});
+
+// Click on drop zone to open file selector (but not on child buttons)
+dropZone.addEventListener('click', e => {
+  if (e.target === dropZone || e.target === dropZone.querySelector('.icon') || e.target === dropZone.querySelector('.title') || e.target === dropZone.querySelector('.sub')) {
+    fileInput.click();
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// RECEIVE GLB FROM MAIN APP VIA postMessage
+// ═══════════════════════════════════════════════════════
+if (window.opener && window.opener !== window) {
+  // Signal readiness to the opener
+  window.opener.postMessage('glb_viewer_ready', '*');
+  // Listen for the GLB data
+  window.addEventListener('message', event => {
+    if (event.data && event.data.type === 'glb_data') {
+      const arrayBuffer = event.data.data;
+      const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      loadGlb(url);
+    }
+  });
+  // Timeout: if no data after 5s, show drop UI
+  setTimeout(() => {
+    if (!modelGroup) {
+      toast('No se recibió el modelo del editor. Arrastrá un GLB manualmente.');
+    }
+  }, 5000);
+}
+
+// If no opener, load from ?url= parameter
+const params = new URLSearchParams(window.location.search);
+if (!window.opener && params.has('url')) {
+  loadGlb(params.get('url'));
+}
+</script>
+</body>
+</html>

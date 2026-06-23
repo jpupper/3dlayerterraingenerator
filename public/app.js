@@ -1,4 +1,3 @@
-
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
@@ -31,7 +30,7 @@ const state = {
   layers:15, maxHeight:3.0, smoothing:2,
   brillo:0, contraste:1, resolution:128,
   sizeX:5, sizeZ:5,
-  tool:'add', brushSize:20, brushFlow:30, brushStrength:0.3,
+  tool:'add', brushSize:20, brushFlow:30, brushStrength:2,
   viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
   baseColor:'#c4a265', paintColor:'#e55336', paintAlpha:0.5,
   showBase:true,
@@ -153,12 +152,14 @@ loadPresets = async function() {
   }
 };
 
-// Right panel save preset
+// Right panel save preset — with spinner
 if (rightSavePresetBtn) {
   rightSavePresetBtn.addEventListener('click', () => {
     const name = rightPresetName ? rightPresetName.value.trim() : '';
     if (!name) { toast('Escribí un nombre para el preset'); if (rightPresetName) rightPresetName.focus(); return; }
-    // Save directly without relying on left panel elements
+    const oldText = rightSavePresetBtn.textContent;
+    rightSavePresetBtn.innerHTML = '⏳'; // spinner indicator
+    rightSavePresetBtn.disabled = true;
     const params = getStateSnapshot();
     const payload = {
       name: name,
@@ -175,11 +176,15 @@ if (rightSavePresetBtn) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        rightSavePresetBtn.innerHTML = oldText;
+        rightSavePresetBtn.disabled = false;
         if (!res.ok) { toast('Error al guardar preset'); return; }
         toast('Preset "' + name + '" guardado');
         if (rightPresetName) rightPresetName.value = '';
         loadPresets();
       } catch (e) {
+        rightSavePresetBtn.innerHTML = oldText;
+        rightSavePresetBtn.disabled = false;
         toast('Error de conexión al guardar preset');
         console.error(e);
       }
@@ -601,7 +606,7 @@ function animate() {
       if (gx >= 0 && gx < RES && gz >= 0 && gz < RES) {
         paint3dAt(gx, gz);
         if (state.tool === 'color') {
-          updateMeshColors();
+          updateMeshColors(); // live color feedback
         } else {
           updateMeshVertices(false, false);
         }
@@ -785,7 +790,7 @@ function paint3dAt(gx, gz) {
     else {
       // Elevation: direction from active button (add=subir, sub=bajar)
       const dir = state.tool === 'add' ? 1 : -1;
-      const rate = Math.abs(state.brushStrength); // 0..1
+      const rate = Math.abs(state.brushStrength); // 0..5
       const amount = f * flow * (0.05 + rate * 0.20);
       heightData[pz*RES+px] = Math.max(0, Math.min(1, cur + dir * amount));
     }
@@ -853,7 +858,7 @@ function setup3dPaintEvents() {
     // Paint first frame (animate loop handles subsequent frames)
     paint3dAt(p.x, p.z);
     if (state.tool === 'color') {
-      updateMeshColors();
+      updateMeshColors(); // live color feedback
     } else {
       updateMeshVertices(false, false);
     }
@@ -870,9 +875,9 @@ function setup3dPaintEvents() {
   window.addEventListener('mouseup', () => {
     if (is3dPainting) {
       is3dPainting = false; controls.enabled = true;
-      // No smoothing on mouseup — it erases tiny paint accumulations.
-      // User can click "Aplicar pincel" for final smoothing.
-      updateMeshVertices();
+      // Smooth on mouseup — applies smoothing to a COPY of heightData so raw paint
+      // data is preserved while the display shows the smooth result immediately.
+      updateMeshVertices(true, true);
       applyBrilloContraste();
       drawCanvas();
       if (state.tool === 'color' && terrainMesh) {
@@ -884,7 +889,7 @@ function setup3dPaintEvents() {
   renderer.domElement.addEventListener('mouseleave', () => {
     if (is3dPainting) {
       is3dPainting = false; controls.enabled = true;
-      updateMeshVertices();
+      updateMeshVertices(true, true);
       applyBrilloContraste();
       drawCanvas();
       if (state.tool === 'color' && terrainMesh) {
@@ -912,6 +917,58 @@ function setup3dPaintEvents() {
       brushRing.visible = false;
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════
+// LAYER OUTLINE LINES (for GLB export)
+// ═══════════════════════════════════════════════════════
+function generateLayerOutlineLines() {
+  const N = state.layers;
+  const hScale = state.maxHeight;
+  const scaleX = state.sizeX;
+  const scaleZ = state.sizeZ;
+  const pts = [];
+
+  // Horizontal edges (between x and x+1)
+  for (let z = 0; z < RES; z++) {
+    for (let x = 0; x < RES - 1; x++) {
+      const h1 = Math.floor(baseHeightData[z * RES + x] * N) / N;
+      const h2 = Math.floor(baseHeightData[z * RES + (x + 1)] * N) / N;
+      if (h1 !== h2) {
+        const minH = Math.min(h1, h2);
+        const px1 = (x / (RES - 1) - 0.5) * scaleX;
+        const px2 = ((x + 1) / (RES - 1) - 0.5) * scaleX;
+        const pz = (z / (RES - 1) - 0.5) * scaleZ;
+        pts.push(px1, minH * hScale + 0.002, pz, px2, minH * hScale + 0.002, pz);
+      }
+    }
+  }
+
+  // Vertical edges (between z and z+1)
+  for (let z = 0; z < RES - 1; z++) {
+    for (let x = 0; x < RES; x++) {
+      const h1 = Math.floor(baseHeightData[z * RES + x] * N) / N;
+      const h2 = Math.floor(baseHeightData[(z + 1) * RES + x] * N) / N;
+      if (h1 !== h2) {
+        const minH = Math.min(h1, h2);
+        const px = (x / (RES - 1) - 0.5) * scaleX;
+        const pz1 = (z / (RES - 1) - 0.5) * scaleZ;
+        const pz2 = ((z + 1) / (RES - 1) - 0.5) * scaleZ;
+        pts.push(px, minH * hScale + 0.002, pz1, px, minH * hScale + 0.002, pz2);
+      }
+    }
+  }
+
+  if (pts.length === 0) return null;
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.25,
+    linewidth: 1,
+  }));
 }
 
 // ═══════════════════════════════════════════════════════
@@ -949,24 +1006,85 @@ $('#exportSvg').addEventListener('click', () => {
     parts.push(`<path d="${d}" fill="none" stroke="${cl}" stroke-width="1.5" opacity="0.7"/><text x="20" y="${30+l*20}" font-size="10" fill="${cl}" font-family="sans-serif">Capa ${l}</text>`);
   }
   if (parts.length===0) { toast('No hay suficientes capas'); return; }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${parts.join('\n')}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${parts.join('\\n')}</svg>`;
   const b = new Blob([svg], {type:'image/svg+xml'}); const u=URL.createObjectURL(b);
   const a = document.createElement('a'); a.href=u; a.download=`terrain_layers_${N}.svg`; a.click(); URL.revokeObjectURL(u);
   toast(`SVG con ${N} capas exportado`);
 });
 
-$('#exportGlb').addEventListener('click', () => {
+// Build a group with terrain + layer outline lines for GLB export
+function buildGlbExportGroup() {
+  const group = new THREE.Group();
+  // Clone the terrain mesh for independent export
+  const meshClone = terrainMesh.clone();
+  // Ensure material is set up for vertex colors
+  if (meshClone.material) {
+    meshClone.material = meshClone.material.clone();
+    meshClone.material.vertexColors = true;
+    meshClone.material.roughness = 0.6;
+    meshClone.material.metalness = 0.05;
+  }
+  group.add(meshClone);
+
+  // Add layer outline lines
+  const layerLines = generateLayerOutlineLines();
+  if (layerLines) group.add(layerLines);
+
+  return group;
+}
+
+// Generic GLB export function — calls callback with ArrayBuffer
+function exportGlbThen(callback) {
   if (!terrainMesh) { toast('Primero generá el terreno'); return; }
   loadingOverlay.classList.add('show');
+
+  // Ensure baseHeightData is current for line generation
+  if (!is3dPainting) {
+    updateMeshVertices();
+    applyBrilloContraste();
+    drawCanvas();
+  }
+
+  const group = buildGlbExportGroup();
   const exporter = new GLTFExporter();
   const opt = { binary: true, trs: false, onlyVisible: true, includeCustomExtensions: false };
-  exporter.parse(terrainMesh, glb => {
+  exporter.parse(group, glb => {
+    // Cleanup temporary meshes
+    group.children.forEach(c => {
+      if (c.geometry && c !== terrainMesh) c.geometry.dispose();
+      if (c.material && c !== terrainMesh?.material) c.material.dispose();
+    });
+    loadingOverlay.classList.remove('show');
+    callback(glb);
+  }, e => { loadingOverlay.classList.remove('show'); toast('Error exportando GLB'); }, opt);
+}
+
+// Export GLB — download as file
+$('#exportGlb').addEventListener('click', () => {
+  exportGlbThen(glb => {
     const b = new Blob([glb], {type:'application/octet-stream'});
     const u = URL.createObjectURL(b); const a = document.createElement('a');
     a.href = u; a.download = 'terrain_model.glb'; a.click(); URL.revokeObjectURL(u);
-    loadingOverlay.classList.remove('show');
-    toast('GLB exportado');
-  }, e => { loadingOverlay.classList.remove('show'); toast('Error exportando GLB'); }, opt);
+    toast('GLB exportado con líneas de capa');
+  });
+});
+
+// View GLB — open in glbviewer.html via postMessage
+let pendingGlbData = null;
+
+window.addEventListener('message', event => {
+  if (event.data === 'glb_viewer_ready' && pendingGlbData) {
+    event.source.postMessage({ type: 'glb_data', data: pendingGlbData }, event.origin);
+    pendingGlbData = null;
+  }
+});
+
+$('#viewGlbBtn').addEventListener('click', () => {
+  exportGlbThen(glb => {
+    pendingGlbData = glb;
+    toast('Abriendo visor GLB...');
+    window.open('glbviewer.html', '_blank');
+  });
 });
 
 // ═══════════════════════════════════════════════════════
@@ -1016,7 +1134,7 @@ $resolution.addEventListener('input', () => {
 
 $brushSize.addEventListener('input', () => { state.brushSize = parseInt($brushSize.value); $('#brushSizeVal').textContent = state.brushSize; });
 $brushFlow.addEventListener('input', () => { state.brushFlow = parseInt($brushFlow.value); $('#brushFlowVal').textContent = state.brushFlow; });
-$brushStrength.addEventListener('input', () => { state.brushStrength = parseInt($brushStrength.value) / 100; $('#brushStrengthVal').textContent = $brushStrength.value;
+$brushStrength.addEventListener('input', () => { state.brushStrength = parseInt($brushStrength.value); $('#brushStrengthVal').textContent = state.brushStrength;
   // Solo actualiza el display — la dirección la controlan los botones
   updatePaintModeDisplay();
 });
@@ -1106,7 +1224,7 @@ function applyStateSnapshot(params) {
   if (params.tool !== undefined) { state.tool = params.tool; document.querySelectorAll('.paint-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === params.tool)); }
   if (params.brushSize !== undefined) { state.brushSize = params.brushSize; $('#brushSize').value = params.brushSize; $('#brushSizeVal').textContent = params.brushSize; }
   if (params.brushFlow !== undefined) { state.brushFlow = params.brushFlow; $('#brushFlow').value = params.brushFlow; $('#brushFlowVal').textContent = params.brushFlow; }
-  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; const pct = Math.round(params.brushStrength * 100); $('#brushStrength').value = pct; $('#brushStrengthVal').textContent = pct; }
+  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; $('#brushStrength').value = params.brushStrength; $('#brushStrengthVal').textContent = params.brushStrength; }
   if (params.viewMode !== undefined && params.viewMode !== state.viewMode) { setViewMode(params.viewMode); }
   if (params.paint3d !== undefined) { state.paint3d = params.paint3d; paint3dBtn.style.borderColor = params.paint3d ? 'var(--accent)' : 'var(--border)'; paint3dBtn.style.background = params.paint3d ? 'rgba(229,83,54,0.15)' : ''; }
   if (params.baseColor !== undefined) { state.baseColor = params.baseColor; $('#baseColorPicker').value = params.baseColor; }
@@ -1193,7 +1311,17 @@ async function loadPreset(id) {
     if (data.params) applyStateSnapshot(data.params);
     needsRegen = true;
     drawCanvas();
-    requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
+    requestAnimationFrame(() => {
+      rebuildTerrain();
+      // Restore saved colors AFTER rebuild (rebuild may reset colorData)
+      if (data.colorData && data.colorData.length === RES*RES*3) {
+        colorData = new Float32Array(data.colorData);
+        if (terrainMesh && state.viewMode !== 'heat') {
+          updateMeshColors();
+        }
+      }
+      loadingOverlay.classList.remove('show');
+    });
     toast('Preset "' + (data.name || id) + '" cargado');
   } catch (e) {
     toast('Error de conexión al cargar preset');
