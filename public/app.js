@@ -30,7 +30,7 @@ const state = {
   layers:15, maxHeight:3.0, smoothing:2,
   brillo:0, contraste:1, resolution:128,
   sizeX:5, sizeZ:5,
-  tool:'add', brushSize:20, brushFlow:30, brushStrength:2,
+  tool:'add', brushSize:20, brushFlow:30, brushStrength:0.5,
   viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
   baseColor:'#c4a265', paintColor:'#e55336', paintAlpha:0.5,
   showBase:true,
@@ -608,7 +608,7 @@ function animate() {
         if (state.tool === 'color') {
           updateMeshColors(); // live color feedback
         } else {
-          updateMeshVertices(false, false);
+          updateMeshVertices(true, false); // smooth display copy, no normals (GPU sync)
         }
         drawCanvas();
       }
@@ -790,7 +790,7 @@ function paint3dAt(gx, gz) {
     else {
       // Elevation: direction from active button (add=subir, sub=bajar)
       const dir = state.tool === 'add' ? 1 : -1;
-      const rate = Math.abs(state.brushStrength); // 0..5
+      const rate = Math.abs(state.brushStrength); // 0..1
       const amount = f * flow * (0.05 + rate * 0.20);
       heightData[pz*RES+px] = Math.max(0, Math.min(1, cur + dir * amount));
     }
@@ -818,6 +818,8 @@ function updateMeshVertices(smooth, updateNormals) {
     }
   }
   baseHeightData.set(src);
+  // Apply brightness/contrast so the display always matches slider values during painting
+  applyBrilloContraste();
   const posAttr = terrainMesh.geometry.getAttribute('position');
   const arr = posAttr.array;
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
@@ -860,7 +862,7 @@ function setup3dPaintEvents() {
     if (state.tool === 'color') {
       updateMeshColors(); // live color feedback
     } else {
-      updateMeshVertices(false, false);
+      updateMeshVertices(true, false); // smooth display copy, no normals (GPU sync)
     }
     drawCanvas();
     updateBrushRing(e);
@@ -878,7 +880,6 @@ function setup3dPaintEvents() {
       // Smooth on mouseup — applies smoothing to a COPY of heightData so raw paint
       // data is preserved while the display shows the smooth result immediately.
       updateMeshVertices(true, true);
-      applyBrilloContraste();
       drawCanvas();
       if (state.tool === 'color' && terrainMesh) {
         updateMeshColors();
@@ -890,7 +891,6 @@ function setup3dPaintEvents() {
     if (is3dPainting) {
       is3dPainting = false; controls.enabled = true;
       updateMeshVertices(true, true);
-      applyBrilloContraste();
       drawCanvas();
       if (state.tool === 'color' && terrainMesh) {
         updateMeshColors();
@@ -1041,7 +1041,6 @@ function exportGlbThen(callback) {
   // Ensure baseHeightData is current for line generation
   if (!is3dPainting) {
     updateMeshVertices();
-    applyBrilloContraste();
     drawCanvas();
   }
 
@@ -1134,7 +1133,7 @@ $resolution.addEventListener('input', () => {
 
 $brushSize.addEventListener('input', () => { state.brushSize = parseInt($brushSize.value); $('#brushSizeVal').textContent = state.brushSize; });
 $brushFlow.addEventListener('input', () => { state.brushFlow = parseInt($brushFlow.value); $('#brushFlowVal').textContent = state.brushFlow; });
-$brushStrength.addEventListener('input', () => { state.brushStrength = parseInt($brushStrength.value); $('#brushStrengthVal').textContent = state.brushStrength;
+$brushStrength.addEventListener('input', () => { state.brushStrength = parseFloat($brushStrength.value); $('#brushStrengthVal').textContent = state.brushStrength.toFixed(2);
   // Solo actualiza el display — la dirección la controlan los botones
   updatePaintModeDisplay();
 });
@@ -1224,7 +1223,7 @@ function applyStateSnapshot(params) {
   if (params.tool !== undefined) { state.tool = params.tool; document.querySelectorAll('.paint-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === params.tool)); }
   if (params.brushSize !== undefined) { state.brushSize = params.brushSize; $('#brushSize').value = params.brushSize; $('#brushSizeVal').textContent = params.brushSize; }
   if (params.brushFlow !== undefined) { state.brushFlow = params.brushFlow; $('#brushFlow').value = params.brushFlow; $('#brushFlowVal').textContent = params.brushFlow; }
-  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; $('#brushStrength').value = params.brushStrength; $('#brushStrengthVal').textContent = params.brushStrength; }
+  if (params.brushStrength !== undefined) { state.brushStrength = params.brushStrength; $('#brushStrength').value = params.brushStrength; $('#brushStrengthVal').textContent = params.brushStrength.toFixed(2); }
   if (params.viewMode !== undefined && params.viewMode !== state.viewMode) { setViewMode(params.viewMode); }
   if (params.paint3d !== undefined) { state.paint3d = params.paint3d; paint3dBtn.style.borderColor = params.paint3d ? 'var(--accent)' : 'var(--border)'; paint3dBtn.style.background = params.paint3d ? 'rgba(229,83,54,0.15)' : ''; }
   if (params.baseColor !== undefined) { state.baseColor = params.baseColor; $('#baseColorPicker').value = params.baseColor; }
