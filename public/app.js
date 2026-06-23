@@ -396,12 +396,19 @@ function smoothHeightmap(passes) {
   const tmp = new Float32Array(RES*RES);
   for (let p = 0; p < passes; p++) {
     for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
+      const idx = y*RES+x;
+      // Skip background (zero-height) pixels entirely
+      if (heightData[idx] <= 0.001) { tmp[idx] = 0; continue; }
       let s = 0, n = 0;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         const nx = x+dx, ny = y+dy;
-        if (nx>=0 && nx<RES && ny>=0 && ny<RES) { s += heightData[ny*RES+nx]; n++; }
+        if (nx>=0 && nx<RES && ny>=0 && ny<RES) {
+          const v = heightData[ny*RES+nx];
+          // Only average over non-zero neighbors (preserves terrain edge)
+          if (v > 0.001) { s += v; n++; }
+        }
       }
-      tmp[y*RES+x] = s / n;
+      tmp[idx] = n > 0 ? s / n : heightData[idx];
     }
     heightData.set(tmp);
   }
@@ -583,12 +590,12 @@ function buildRuler(sizeX, sizeZ) {
   const hx = sizeX / 2, hz = sizeZ / 2;
   const terrainSize = Math.max(sizeX, sizeZ);
   // Scale labels and ticks proportionally to terrain size so they're readable at camera distance
-  const labelScale = Math.max(0.3, terrainSize * 0.008);
-  const tickLen = Math.max(0.12, terrainSize * 0.005);
+  const labelScale = Math.max(1.5, terrainSize * 0.1);
+  const tickLen = Math.max(0.6, terrainSize * 0.075);
 
   // --- Grid lines ---
   const gridMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.12 });
-  const gridStep = 0.5;
+  const gridStep = Math.max(0.5, terrainSize / 10);
   const gridLines = [];
   // Lines along X
   for (let z = -hz; z <= hz + 0.001; z += gridStep) {
@@ -627,39 +634,63 @@ function buildRuler(sizeX, sizeZ) {
   }
 
   // --- Dimension labels ---
+  // Helper: visible 3D bar with full opacity
+  function makeBar(p1, p2, color, thickness) {
+    const s = new THREE.Vector3(p1[0], p1[1], p1[2]);
+    const e = new THREE.Vector3(p2[0], p2[1], p2[2]);
+    const dir = new THREE.Vector3().copy(e).sub(s);
+    const len = dir.length();
+    if (len < 0.001) return null;
+    const mid = new THREE.Vector3().copy(s).add(dir.clone().multiplyScalar(0.5));
+    const geo = new THREE.BoxGeometry(thickness, thickness, len);
+    const mat = new THREE.MeshBasicMaterial({ color });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(mid);
+    mesh.lookAt(e);
+    return mesh;
+  }
+  function makeCone(pos, dir, color, size) {
+    const geo = new THREE.ConeGeometry(size, size * 1.5, 6);
+    const mat = new THREE.MeshBasicMaterial({ color });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pos[0], pos[1], pos[2]);
+    const up = new THREE.Vector3(0, 1, 0);
+    const dn = new THREE.Vector3(dir[0], dir[1], dir[2]).normalize();
+    mesh.quaternion.setFromUnitVectors(up, dn);
+    return mesh;
+  }
+  const barThick = Math.max(0.04, terrainSize * 0.002);
+  const coneSize = barThick * 3;
+
   // Width label (X axis)
   const lblW = makeTextSprite(sizeX.toFixed(1) + 'cm', '#8caadf', labelScale);
   lblW.position.set(0, 0.05, -hz - 0.6);
   rulerGroup.add(lblW);
-  // Label arrow line
-  const arrMat1 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
-  const arr1 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx, 0.02, -hz - 0.3), new THREE.Vector3(hx, 0.02, -hz - 0.3)
-  ]), arrMat1);
-  rulerGroup.add(arr1);
+  // Label arrow line — visible 3D bar
+  const barW = makeBar([-hx, 0.02, -hz - 0.3], [hx, 0.02, -hz - 0.3], 0x6a8fcf, barThick);
+  if (barW) rulerGroup.add(barW);
+  // Arrowheads at each end
+  rulerGroup.add(makeCone([-hx, 0.02, -hz - 0.3], [1,0,0], 0x6a8fcf, coneSize));
+  rulerGroup.add(makeCone([hx, 0.02, -hz - 0.3], [-1,0,0], 0x6a8fcf, coneSize));
 
   // Depth label (Z axis)
   const lblD = makeTextSprite(sizeZ.toFixed(1) + 'cm', '#8caadf', labelScale);
   lblD.position.set(hx + 0.6, 0.05, 0);
   rulerGroup.add(lblD);
-  const arrMat2 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
-  const arr2 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(hx + 0.3, 0.02, -hz), new THREE.Vector3(hx + 0.3, 0.02, hz)
-  ]), arrMat2);
-  rulerGroup.add(arr2);
+  const barD = makeBar([hx + 0.3, 0.02, -hz], [hx + 0.3, 0.02, hz], 0x6a8fcf, barThick);
+  if (barD) rulerGroup.add(barD);
+  rulerGroup.add(makeCone([hx + 0.3, 0.02, -hz], [0,0,1], 0x6a8fcf, coneSize));
+  rulerGroup.add(makeCone([hx + 0.3, 0.02, hz], [0,0,-1], 0x6a8fcf, coneSize));
 
-  // Height label (Y axis) - vertical line near front-left corner
+  // Height label (Y axis) — vertical bar near front-left corner
   const maxH = state.maxHeight;
-  const arrMat3 = new THREE.LineBasicMaterial({ color: 0xcf8a6f, transparent: true, opacity: 0.4 });
-  const arr3 = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx - 0.3, 0, -hz), new THREE.Vector3(-hx - 0.3, maxH, -hz)
-  ]), arrMat3);
-  rulerGroup.add(arr3);
-  // Top tick
-  const tickH = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-hx - 0.45, maxH, -hz), new THREE.Vector3(-hx - 0.15, maxH, -hz)
-  ]), arrMat3);
-  rulerGroup.add(tickH);
+  const barH = makeBar([-hx - 0.3, 0, -hz], [-hx - 0.3, maxH, -hz], 0xcf8a6f, barThick);
+  if (barH) rulerGroup.add(barH);
+  // Arrowhead at top, no arrow at bottom (ground level)
+  rulerGroup.add(makeCone([-hx - 0.3, maxH, -hz], [0,1,0], 0xcf8a6f, coneSize));
+  // Top tick — visible bar
+  const tickH = makeBar([-hx - 0.45, maxH, -hz], [-hx - 0.15, maxH, -hz], 0xcf8a6f, barThick);
+  if (tickH) rulerGroup.add(tickH);
   const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', labelScale);
   lblH.position.set(-hx - 0.7, maxH * 0.5, -hz);
   rulerGroup.add(lblH);
@@ -729,7 +760,7 @@ function rebuildTerrain() {
   // 4. Quantize
   const N = state.layers;
   const quantized = new Float32Array(RES*RES);
-  for (let i = 0; i < RES*RES; i++) quantized[i] = Math.floor(baseHeightData[i] * N) / N;
+  for (let i = 0; i < RES*RES; i++) quantized[i] = baseHeightData[i] > 0.001 ? Math.ceil(baseHeightData[i] * N) / N : 0;
 
   // Initialize colorData if needed
   if (!colorData || colorData.length !== RES*RES*3) {
@@ -770,7 +801,7 @@ function rebuildTerrain() {
     const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
     // Skip quads where all corners are flat (height = 0) — no geometry for black areas
     if (!state.showBase && quantized[a] === 0 && quantized[b] === 0 && quantized[c] === 0 && quantized[d] === 0) continue;
-    indices.push(a,b,c); indices.push(b,d,c);
+    indices.push(a,c,b); indices.push(b,c,d); // CW winding = normals up
   }
 
   const geo = new THREE.BufferGeometry();
@@ -915,12 +946,17 @@ function updateMeshVertices(smooth, updateNormals) {
     const tmp = new Float32Array(RES*RES);
     for (let p = 0; p < state.smoothing; p++) {
       for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
+        const idx = y*RES+x;
+        if (src[idx] <= 0.001) { tmp[idx] = 0; continue; }
         let s = 0, n = 0;
         for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
           const nx = x+dx, ny = y+dy;
-          if (nx>=0 && nx<RES && ny>=0 && ny<RES) { s += src[ny*RES+nx]; n++; }
+          if (nx>=0 && nx<RES && ny>=0 && ny<RES) {
+            const v = src[ny*RES+nx];
+            if (v > 0.001) { s += v; n++; }
+          }
         }
-        tmp[y*RES+x] = s / n;
+        tmp[idx] = n > 0 ? s / n : src[idx];
       }
       src.set(tmp);
     }
@@ -931,7 +967,8 @@ function updateMeshVertices(smooth, updateNormals) {
   const posAttr = terrainMesh.geometry.getAttribute('position');
   const arr = posAttr.array;
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const h = Math.floor(baseHeightData[z*RES+x] * N) / N;
+    const v = baseHeightData[z*RES+x];
+    const h = v > 0.001 ? Math.ceil(v * N) / N : 0;
     arr[(z*RES+x)*3+1] = h * hScale;
   }
   posAttr.needsUpdate = true;
@@ -1037,11 +1074,13 @@ function generateLayerOutlineLines() {
   const scaleZ = state.sizeZ;
   const pts = [];
 
+function qh(v) { return v > 0.001 ? Math.ceil(v * N) / N : 0; }
+
   // Horizontal edges (between x and x+1)
   for (let z = 0; z < RES; z++) {
     for (let x = 0; x < RES - 1; x++) {
-      const h1 = Math.floor(baseHeightData[z * RES + x] * N) / N;
-      const h2 = Math.floor(baseHeightData[z * RES + (x + 1)] * N) / N;
+      const h1 = qh(baseHeightData[z * RES + x]);
+      const h2 = qh(baseHeightData[z * RES + (x + 1)]);
       if (h1 !== h2) {
         const minH = Math.min(h1, h2);
         const px1 = (x / (RES - 1) - 0.5) * scaleX;
@@ -1055,8 +1094,8 @@ function generateLayerOutlineLines() {
   // Vertical edges (between z and z+1)
   for (let z = 0; z < RES - 1; z++) {
     for (let x = 0; x < RES; x++) {
-      const h1 = Math.floor(baseHeightData[z * RES + x] * N) / N;
-      const h2 = Math.floor(baseHeightData[(z + 1) * RES + x] * N) / N;
+      const h1 = qh(baseHeightData[z * RES + x]);
+      const h2 = qh(baseHeightData[(z + 1) * RES + x]);
       if (h1 !== h2) {
         const minH = Math.min(h1, h2);
         const px = (x / (RES - 1) - 0.5) * scaleX;
@@ -1278,6 +1317,11 @@ function updateMeshColors() {
 
 $('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('show'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
 $('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
+
+$('#refreshLightBtn').addEventListener('click', () => {
+  loadingOverlay.classList.add('show');
+  requestAnimationFrame(() => { rebuildTerrain(); toast('Iluminación actualizada'); });
+});
 
 // ═══════════════════════════════════════════════════════
 // EXPORT / IMPORT TERRAIN AS JSON

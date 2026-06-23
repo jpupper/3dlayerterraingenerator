@@ -73,7 +73,7 @@ function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); clea
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a12);
 
-const camera = new THREE.PerspectiveCamera(40, viewport.clientWidth / viewport.clientHeight, 0.1, 100);
+const camera = new THREE.PerspectiveCamera(40, viewport.clientWidth / viewport.clientHeight, 0.1, 1000);
 camera.position.set(4, 3, 6);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -134,10 +134,24 @@ function loadGlb(url) {
     const maxDim = Math.max(size.x, size.y, size.z);
     const dist = maxDim * 1.8;
 
+    // Ensure camera far plane is large enough
+    const neededFar = Math.max(100, maxDim * 5);
+    camera.far = neededFar;
+    camera.updateProjectionMatrix();
+
     camera.position.set(dist * 0.7, dist * 0.6, dist);
     controls.target.copy(center);
     controls.maxDistance = maxDim * 4;
     controls.update();
+
+    // Adjust shadow camera to fit the model
+    const shMax = maxDim * 1.5;
+    dl.shadow.camera.left = -shMax;
+    dl.shadow.camera.right = shMax;
+    dl.shadow.camera.top = shMax;
+    dl.shadow.camera.bottom = -shMax;
+    dl.shadow.camera.far = shMax * 3;
+    dl.shadow.camera.updateProjectionMatrix();
 
     // Enable download button
     downloadBtn.style.display = 'inline-flex';
