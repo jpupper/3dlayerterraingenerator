@@ -11,6 +11,7 @@ const TERRAIN_LIB = {
   'san-juan-detailed': { name:'San Juan HD', tags:'Relieve detallado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:25, maxHeight:5.0, smoothing:2 },
   'san-juan-topo': { name:'San Juan Topo', tags:'Desde topográfico · fondo negro', thumb:'maqueta/heightmap_topo.png', depthUrl:'maqueta/heightmap_topo.png', layers:18, maxHeight:4.5, smoothing:2 },
   'san-juan-suave': { name:'San Juan Suave', tags:'Relieve suavizado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:15, maxHeight:3.0, smoothing:4 },
+  'san-juan-color': { name:'San Juan Color', tags:'Mapa de colores · relieve real 0-6.8m', thumb:'maqueta/heightmapfinalfinal.png', depthUrl:'maqueta/heightmapfinalfinal.png', layers:30, maxHeight:7.0, smoothing:1, isColorMap:true },
   'default-hill': { name:'Colina Default', tags:'Terreno genérico', thumb:null, depthUrl:null, layers:15, maxHeight:3.0, smoothing:2, isDefault:true },
 };
 
@@ -29,7 +30,7 @@ let lastMouseX = 0, lastMouseY = 0;
 const state = {
   layers:15, maxHeight:3.0, smoothing:2,
   brillo:0, contraste:1, resolution:128,
-  sizeX:5, sizeZ:5,
+  sizeX:130, sizeZ:130,
   tool:'add', brushSize:20, brushFlow:30, brushStrength:0.5,
   viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
   baseColor:'#c4a265', paintColor:'#e55336', paintAlpha:0.5,
@@ -236,12 +237,16 @@ function loadTerrain(id) {
   if (t.depthUrl) {
     const img = new Image();
     img.onload = () => {
-      loadImageToData(img, heightData);
+      if (t.isColorMap) {
+        loadColorHeightmap(img, heightData);
+      } else {
+        loadImageToData(img, heightData);
+      }
       loadingOverlay.classList.remove('show');
       needsRegen = true;
       drawCanvas();
       if (threeReady) rebuildTerrain();
-      toast(`Terreno "${t.name}" cargado`);
+      toast('Terreno "' + t.name + '" cargado');
     };
     img.onerror = () => { loadingOverlay.classList.remove('show'); toast(`Error cargando ${t.name}`); };
     img.src = t.depthUrl;
@@ -259,6 +264,67 @@ function loadImageToData(img, arr) {
   const pix = ctx.getImageData(0, 0, RES, RES).data;
   for (let i = 0; i < RES * RES; i++)
     arr[i] = Math.max(0, Math.min(1, (pix[i*4]*0.299 + pix[i*4+1]*0.587 + pix[i*4+2]*0.116) / 255));
+}
+
+// Color palette for San Juan heightmap (color-coded elevation map)
+// Each entry maps an RGB color to a height in meters
+const SAN_JUAN_COLORS = [
+  { r:255,g:242,b:243, h:6.793 }, { r:255,g:214,b:217, h:6.216 },
+  { r:255,g:168,b:176, h:5.659 }, { r:255,g:128,b:137, h:5.122 },
+  { r:255,g:92,b:102,  h:4.607 }, { r:255,g:59,b:71,   h:4.113 },
+  { r:230,g:34,b:46,   h:3.642 }, { r:214,g:28,b:35,   h:3.193 },
+  { r:230,g:74,b:46,   h:2.768 }, { r:242,g:116,b:36,  h:2.367 },
+  { r:250,g:159,b:42,  h:1.990 }, { r:247,g:199,b:49,  h:1.640 },
+  { r:255,g:242,b:61,  h:1.317 }, { r:215,g:242,b:61,  h:1.022 },
+  { r:161,g:230,b:53,  h:0.758 }, { r:102,g:217,b:43,  h:0.525 },
+  { r:44,g:209,b:53,   h:0.327 }, { r:31,g:196,b:103,  h:0.168 },
+  { r:43,g:230,b:176,  h:0.054 }, { r:54,g:212,b:255,  h:0 },
+];
+const SAN_JUAN_MAX_H = 6.793;
+
+// Load a color-coded heightmap by matching pixels to the nearest palette color
+// Process at full image resolution first, then bilinearly downsample to RES
+// to avoid blended-color artifacts from canvas downscaling
+function loadColorHeightmap(img, arr) {
+  const iw = img.naturalWidth || img.width || 2026;
+  const ih = img.naturalHeight || img.height || 1119;
+  // Convert at full resolution
+  const c = document.createElement('canvas');
+  c.width = iw; c.height = ih;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const pix = ctx.getImageData(0, 0, iw, ih).data;
+  const full = new Float32Array(iw * ih);
+  for (let y = 0; y < ih; y++) {
+    for (let x = 0; x < iw; x++) {
+      const i = (y * iw + x) * 4;
+      const r = pix[i], g = pix[i+1], b = pix[i+2], a = pix[i+3];
+      // Transparent (alpha < 128) or very dark → background, height = 0
+      if (a < 128 || (r < 10 && g < 10 && b < 10)) { full[y*iw+x] = 0; continue; }
+      let bestDist = Infinity, bestH = 0;
+      for (const c2 of SAN_JUAN_COLORS) {
+        const dr = r - c2.r, dg = g - c2.g, db = b - c2.b;
+        const dist = dr*dr + dg*dg + db*db;
+        if (dist < bestDist) { bestDist = dist; bestH = c2.h; }
+      }
+      full[y*iw+x] = Math.max(0, Math.min(1, bestH / SAN_JUAN_MAX_H));
+    }
+  }
+  // Bilinear downsample to RES
+  for (let y = 0; y < RES; y++) {
+    for (let x = 0; x < RES; x++) {
+      const gx = (x / (RES - 1)) * (iw - 1);
+      const gy = (y / (RES - 1)) * (ih - 1);
+      const ix = Math.min(Math.floor(gx), iw - 2);
+      const iy = Math.min(Math.floor(gy), ih - 2);
+      const fx = gx - ix, fy = gy - iy;
+      const a = full[iy*iw+ix];
+      const b = full[iy*iw+ix+1];
+      const c = full[(iy+1)*iw+ix];
+      const d = full[(iy+1)*iw+ix+1];
+      arr[y*RES+x] = a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
+    }
+  }
 }
 
 function applyBrilloContraste() {
@@ -353,7 +419,22 @@ function getCoords(e) {
 function paintAt(cx, cy) {
   const hx = Math.floor(cx/SZ*RES), hy = Math.floor(cy/SZ*RES);
   const size = state.brushSize, flow = state.brushFlow/100, radius = size/2;
-  for (let dy = -Math.ceil(radius); dy <= Math.ceil(radius); dy++) for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
+  const ceilRad = Math.ceil(radius);
+  // Pre-compute max height within brush area for smooth tool
+  let maxH = 0;
+  if (state.tool === 'smooth') {
+    for (let dy = -ceilRad; dy <= ceilRad; dy++) {
+      for (let dx = -ceilRad; dx <= ceilRad; dx++) {
+        const nx = hx+dx, ny = hy+dy;
+        if (nx>=0 && nx<RES && ny>=0 && ny<RES) {
+          if (Math.sqrt(dx*dx+dy*dy) <= radius) {
+            maxH = Math.max(maxH, heightData[ny*RES+nx]);
+          }
+        }
+      }
+    }
+  }
+  for (let dy = -ceilRad; dy <= ceilRad; dy++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = hx+dx, py = hy+dy;
     if (px<0 || px>=RES || py<0 || py>=RES) continue;
     const dist = Math.sqrt(dx*dx+dy*dy);
@@ -363,9 +444,11 @@ function paintAt(cx, cy) {
     if (state.tool === 'add') heightData[py*RES+px] = Math.min(1, cur + f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
     else if (state.tool === 'sub') heightData[py*RES+px] = Math.max(0, cur - f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
     else if (state.tool === 'smooth') {
-      let s=0, n=0;
-      for (let sy=-1;sy<=1;sy++) for (let sx=-1;sx<=1;sx++) { const nx=px+sx, ny=py+sy; if (nx>=0&&nx<RES&&ny>=0&&ny<RES) { s+=heightData[ny*RES+nx]; n++; } }
-      heightData[py*RES+px] = cur + (s/n - cur)*f*flow*0.5;
+      // Raise terrain toward the highest layer within the brush area
+      if (cur < maxH) {
+        const amount = f * flow * (0.05 + Math.abs(state.brushStrength) * 0.20);
+        heightData[py*RES+px] = Math.min(maxH, cur + amount);
+      }
     }
   }
   needsRegen = true;
@@ -429,7 +512,7 @@ function loadFile(file) {
 // ═══════════════════════════════════════════════════════
 function initThree() {
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a12);
-  camera = new THREE.PerspectiveCamera(40, viewport.clientWidth/viewport.clientHeight, 0.1, 100);
+  camera = new THREE.PerspectiveCamera(40, viewport.clientWidth/viewport.clientHeight, 0.1, Math.max(state.sizeX, state.sizeZ) * 5);
   const camDist = Math.max(state.sizeX, state.sizeZ) * 1.8;
   camera.position.set(camDist * 0.7, camDist * 0.6, camDist);
   renderer = new THREE.WebGLRenderer({antialias:true});
@@ -498,6 +581,10 @@ function buildRuler(sizeX, sizeZ) {
   rulerGroup = new THREE.Group();
 
   const hx = sizeX / 2, hz = sizeZ / 2;
+  const terrainSize = Math.max(sizeX, sizeZ);
+  // Scale labels and ticks proportionally to terrain size so they're readable at camera distance
+  const labelScale = Math.max(0.3, terrainSize * 0.008);
+  const tickLen = Math.max(0.12, terrainSize * 0.005);
 
   // --- Grid lines ---
   const gridMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.12 });
@@ -526,7 +613,6 @@ function buildRuler(sizeX, sizeZ) {
 
   // --- Tick marks on perimeter ---
   const tickMat = new THREE.LineBasicMaterial({ color: 0x4a6fa5, transparent: true, opacity: 0.4 });
-  const tickLen = 0.12;
   for (let t = -hz + gridStep; t < hz; t += gridStep) {
     const sz = (Math.abs(t) < 0.01) ? tickLen * 2 : tickLen;
     for (const pts2 of [[-hx,t,-hx+sz,t],[hx,t,hx-sz,t]]) {
@@ -542,7 +628,7 @@ function buildRuler(sizeX, sizeZ) {
 
   // --- Dimension labels ---
   // Width label (X axis)
-  const lblW = makeTextSprite(sizeX.toFixed(1) + 'cm', '#8caadf', 0.35);
+  const lblW = makeTextSprite(sizeX.toFixed(1) + 'cm', '#8caadf', labelScale);
   lblW.position.set(0, 0.05, -hz - 0.6);
   rulerGroup.add(lblW);
   // Label arrow line
@@ -553,7 +639,7 @@ function buildRuler(sizeX, sizeZ) {
   rulerGroup.add(arr1);
 
   // Depth label (Z axis)
-  const lblD = makeTextSprite(sizeZ.toFixed(1) + 'cm', '#8caadf', 0.35);
+  const lblD = makeTextSprite(sizeZ.toFixed(1) + 'cm', '#8caadf', labelScale);
   lblD.position.set(hx + 0.6, 0.05, 0);
   rulerGroup.add(lblD);
   const arrMat2 = new THREE.LineBasicMaterial({ color: 0x6a8fcf, transparent: true, opacity: 0.4 });
@@ -574,7 +660,7 @@ function buildRuler(sizeX, sizeZ) {
     new THREE.Vector3(-hx - 0.45, maxH, -hz), new THREE.Vector3(-hx - 0.15, maxH, -hz)
   ]), arrMat3);
   rulerGroup.add(tickH);
-  const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', 0.3);
+  const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', labelScale);
   lblH.position.set(-hx - 0.7, maxH * 0.5, -hz);
   rulerGroup.add(lblH);
 
@@ -722,6 +808,12 @@ function rebuildTerrain() {
 
   // Adjust orbit max distance
   controls.maxDistance = Math.max(state.sizeX, state.sizeZ) * 4;
+  // Ensure camera far plane is large enough for current size
+  const neededFar = Math.max(state.sizeX, state.sizeZ) * 5;
+  if (camera.far < neededFar) {
+    camera.far = neededFar;
+    camera.updateProjectionMatrix();
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -767,7 +859,22 @@ function get3dGridPos(event) {
 function paint3dAt(gx, gz) {
   const size = state.brushSize, flow = state.brushFlow / 100;
   const radius = size / 2;
-  for (let dz = -Math.ceil(radius); dz <= Math.ceil(radius); dz++) for (let dx = -Math.ceil(radius); dx <= Math.ceil(radius); dx++) {
+  const ceilRad = Math.ceil(radius);
+  // Pre-compute max height within brush area for smooth tool
+  let maxH = 0;
+  if (state.tool === 'smooth') {
+    for (let dz = -ceilRad; dz <= ceilRad; dz++) {
+      for (let dx = -ceilRad; dx <= ceilRad; dx++) {
+        const nx = gx+dx, nz = gz+dz;
+        if (nx>=0 && nx<RES && nz>=0 && nz<RES) {
+          if (Math.sqrt(dx*dx+dz*dz) <= radius) {
+            maxH = Math.max(maxH, heightData[nz*RES+nx]);
+          }
+        }
+      }
+    }
+  }
+  for (let dz = -ceilRad; dz <= ceilRad; dz++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = gx+dx, pz = gz+dz;
     if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
     const dist = Math.sqrt(dx*dx+dz*dz);
@@ -775,9 +882,10 @@ function paint3dAt(gx, gz) {
     const f = 1 - dist/radius;
     const cur = heightData[pz*RES+px];
     if (state.tool === 'smooth') {
-      let s2=0, n2=0;
-      for (let sy=-1;sy<=1;sy++) for (let sx=-1;sx<=1;sx++) { const nx=px+sx, ny=pz+sy; if (nx>=0&&nx<RES&&ny>=0&&ny<RES) { s2+=heightData[ny*RES+nx]; n2++; } }
-      heightData[pz*RES+px] = cur + (s2/n2 - cur)*f*flow*0.4;
+      // Raise terrain toward the highest layer within the brush area
+      const rate = Math.abs(state.brushStrength);
+      const amount = f * flow * (0.05 + rate * 0.20);
+      if (cur < maxH) heightData[pz*RES+px] = Math.min(maxH, cur + amount);
     }
     else if (state.tool === 'color') {
       const col = new THREE.Color(state.paintColor || '#c4a265');
@@ -790,7 +898,7 @@ function paint3dAt(gx, gz) {
     else {
       // Elevation: direction from active button (add=subir, sub=bajar)
       const dir = state.tool === 'add' ? 1 : -1;
-      const rate = Math.abs(state.brushStrength); // 0..1
+      const rate = Math.abs(state.brushStrength);
       const amount = f * flow * (0.05 + rate * 0.20);
       heightData[pz*RES+px] = Math.max(0, Math.min(1, cur + dir * amount));
     }
@@ -1172,6 +1280,87 @@ $('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('s
 $('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
 
 // ═══════════════════════════════════════════════════════
+// EXPORT / IMPORT TERRAIN AS JSON
+// ═══════════════════════════════════════════════════════
+$('#exportTerrainBtn').addEventListener('click', () => {
+  const data = {
+    version: 2,
+    params: getStateSnapshot(),
+    heightData: Array.from(heightData),
+    colorData: colorData ? Array.from(colorData) : null,
+    resolution: RES,
+  };
+  const json = JSON.stringify(data);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'terreno_' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Terreno exportado como JSON');
+});
+
+$('#importTerrainBtn').addEventListener('click', () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.addEventListener('change', () => {
+    if (!input.files[0]) return;
+    loadingOverlay.classList.add('show');
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!data.heightData || !data.resolution) {
+          toast('Archivo JSON inválido: falta heightData o resolution');
+          loadingOverlay.classList.remove('show');
+          return;
+        }
+        // Import from version 1 (0..5 brushStrength) or version 2 (0..1)
+        let brushStrength = data.params?.brushStrength;
+        if (data.version === undefined || data.version === 1) {
+          // Old format: brushStrength was 0..5, convert to 0..1
+          if (brushStrength !== undefined) brushStrength = Math.round(brushStrength / 5 * 100) / 100;
+        }
+        // Restore resolution first
+        if (data.resolution !== RES) {
+          reallocateData(data.resolution);
+        }
+        heightData = new Float32Array(data.heightData);
+        baseHeightData.set(heightData);
+        if (data.colorData && data.colorData.length === RES*RES*3) {
+          colorData = new Float32Array(data.colorData);
+        }
+        if (data.params) {
+          if (brushStrength !== undefined) data.params.brushStrength = brushStrength;
+          applyStateSnapshot(data.params);
+        }
+        needsRegen = true;
+        drawCanvas();
+        requestAnimationFrame(() => {
+          rebuildTerrain();
+          // Restore colors after rebuild (rebuild may reset colorData)
+          if (data.colorData && data.colorData.length === RES*RES*3) {
+            colorData = new Float32Array(data.colorData);
+            if (terrainMesh && state.viewMode !== 'heat') {
+              updateMeshColors();
+            }
+          }
+          loadingOverlay.classList.remove('show');
+          toast('Terreno importado');
+        });
+      } catch (err) {
+        toast('Error al leer el archivo: ' + err.message);
+        loadingOverlay.classList.remove('show');
+      }
+    };
+    reader.readAsText(input.files[0]);
+  });
+  input.click();
+});
+
+// ═══════════════════════════════════════════════════════
 // PRESETS: SAVE / LOAD via API
 // ═══════════════════════════════════════════════════════
 // Cambiá API_BASE a la URL del VPS cuando deployes el frontend standalone
@@ -1349,5 +1538,5 @@ updatePaintModeDisplay();
 
 // Load presets list on boot
 setTimeout(() => loadPresets(), 500);
-loadTerrain('san-juan');
+loadTerrain('san-juan-color');
 initThree();
