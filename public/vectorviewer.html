@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exportar Vectores · Terrain Maker</title>
+<style>
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+  :root {
+    --bg: #0e0e14;   --surface: #18181f;   --surface2: #20202a;
+    --border: #2a2a38; --text: #e8e0d0;    --text2: #908a80;
+    --accent: #e55336; --accent2: #4a9eff; --green: #6b8f5e;
+    --radius: 10px;
+  }
+  html, body { height:100%; background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; }
+  .app { display:flex; flex-direction:column; height:100vh; }
+  .header { padding:14px 20px; border-bottom:1px solid var(--border); background:var(--surface2); display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  .header h1 { font-size:15px; font-weight:600; }
+  .header .sub { font-size:10px; color:var(--text2); }
+  .header .back { color:var(--text2); text-decoration:none; font-size:16px; display:flex; align-items:center; }
+  .header .back:hover { color:var(--text); }
+  .spacer { flex:1; }
+  .btn { display:inline-flex; align-items:center; gap:5px; padding:7px 14px; border-radius:6px; font-size:11px; font-weight:600; border:1px solid var(--border); background:var(--surface2); color:var(--text); cursor:pointer; transition:0.2s; text-decoration:none; }
+  .btn:hover { border-color:var(--accent); background:rgba(229,83,54,0.1); }
+  .btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .btn-primary:hover { background:#d0482e; }
+  .btn-green { background:var(--green); color:#fff; border-color:var(--green); }
+  .btn-green:hover { background:#5d7f50; }
+  .btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+  .body { flex:1; overflow-y:auto; padding:16px 20px; }
+  .layer-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:16px; }
+  .layer-card { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--surface); }
+  .layer-card-header { padding:10px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; background:var(--surface2); }
+  .layer-card-header .num { font-size:12px; font-weight:700; color:var(--accent2); }
+  .layer-card-header .label { font-size:11px; color:var(--text2); flex:1; }
+  .layer-card-header .dl-btn { padding:4px 10px; font-size:10px; }
+  .layer-card-body { padding:10px; background:#000; display:flex; align-items:center; justify-content:center; min-height:200px; }
+  .layer-card-body svg { width:100%; height:auto; max-height:260px; display:block; border-radius:4px; }
+
+  .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; }
+  .empty-state .icon { font-size:64px; margin-bottom:12px; }
+  .empty-state .title { font-size:20px; font-weight:600; margin-bottom:6px; }
+  .empty-state .sub { font-size:13px; color:var(--text2); max-width:400px; line-height:1.5; }
+
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:rgba(24,24,31,0.95); backdrop-filter:blur(12px); border:1px solid var(--border); border-radius:10px; padding:8px 18px; font-size:12px; color:var(--text); opacity:0; transition:all 0.4s ease; pointer-events:none; z-index:999; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  .loading-overlay { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.8); font-size:14px; color:var(--text2); gap:10px; pointer-events:none; opacity:0; transition:0.3s; }
+  .loading-overlay.show { opacity:1; }
+  .spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  .status-bar { padding:8px 20px; border-top:1px solid var(--border); background:var(--surface2); font-size:10px; color:var(--text2); display:flex; gap:16px; flex-shrink:0; }
+
+  .controls-row { display:flex; align-items:center; gap:16px; padding:6px 20px; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
+  .control-group { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text2); }
+  .control-group input[type="range"] { width:90px; height:4px; accent-color:var(--accent); cursor:pointer; }
+  .control-group input[type="checkbox"] { accent-color:var(--accent); cursor:pointer; width:16px; height:16px; }
+  .control-group .val { min-width:24px; text-align:center; font-weight:600; color:var(--text); font-size:11px; }
+  .control-label { white-space:nowrap; }
+  @media (max-width:700px) { .layer-grid { grid-template-columns:1fr; } }
+  .overlay-section { margin-top:0; }
+  .overlay-section h2 { font-size:14px; font-weight:600; margin-bottom:10px; }
+  .overlay-mode-btn { font-size:10px; border-radius:4px; border:1px solid var(--border); background:var(--surface); color:var(--text2); cursor:pointer; transition:0.15s; }
+  .overlay-mode-btn:hover { border-color:var(--accent); }
+  .overlay-mode-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .overlay-toggles { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; max-height:140px; overflow-y:auto; padding:2px 0; }
+  .overlay-toggles label { display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 8px; border-radius:4px; border:1px solid var(--border); background:var(--surface); cursor:pointer; transition:0.15s; white-space:nowrap; }
+  .overlay-toggles label:hover { border-color:var(--accent); }
+  .overlay-toggles label.off { opacity:0.35; }
+  .overlay-toggles input[type="checkbox"] { accent-color:var(--accent); width:12px; height:12px; cursor:pointer; }
+  .overlay-svg-wrap { background:#000; border-radius:var(--radius); border:1px solid var(--border); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:10px; }
+  .overlay-svg-wrap svg { width:100%; height:auto; max-height:500px; display:block; border-radius:4px; }
+
+  .tab-bar { display:flex; gap:0; border-bottom:1px solid var(--border); margin-bottom:16px; }
+  .tab-bar .tab { padding:8px 20px; font-size:12px; font-weight:600; border:1px solid transparent; border-bottom:none; border-radius:6px 6px 0 0; background:transparent; color:var(--text2); cursor:pointer; transition:0.15s; }
+  .tab-bar .tab:hover { color:var(--text); background:var(--surface); }
+  .tab-bar .tab.active { color:var(--accent); border-color:var(--border); background:var(--surface); position:relative; }
+  .tab-bar .tab.active::after { content:''; position:absolute; bottom:-1px; left:0; right:0; height:1px; background:var(--surface); }
+  .tab-content { display:none; }
+  .tab-content.active { display:block; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+
+<div class="app">
+  <div class="header">
+    <a class="back" href="index.html">&larr;</a>
+    <div><h1>Exportar Vectores</h1><div class="sub">Capas vectorizadas para maqueta</div></div>
+    <div class="spacer"></div>
+    <button class="btn btn-primary" id="recalculateBtn" style="display:none;">&#x21BB; Recalcular</button>
+    <button class="btn btn-green" id="downloadAllBtn" disabled>&#x1F4E6; Descargar todas</button>
+  </div>
+
+  <div class="controls-row" id="controlsRow" style="display:none;">
+    <div class="control-group">
+      <span class="control-label">Grosor</span>
+      <input type="range" id="strokeWidthRange" min="0.2" max="5" step="0.1" value="1.5">
+      <span class="val" id="strokeWidthVal">1.5</span>
+    </div>
+    <div class="control-group">
+      <input type="checkbox" id="fillToggle">
+      <span class="control-label">Relleno</span>
+    </div>
+  </div>
+
+  <div class="body" id="body">
+    <div class="empty-state" id="emptyState">
+      <div class="icon">&#x1F5FA;&#xFE0F;</div>
+      <div class="title">Esperando datos del editor...</div>
+      <div class="sub">Usá el bot&oacute;n "Export Vector" en el editor principal para enviar los datos del terreno.</div>
+    </div>
+    <div class="tab-bar" id="tabBar" style="display:none;">
+      <button class="tab active" data-tab="layers">Todas las capas</button>
+      <button class="tab" data-tab="overlay">Superposición</button>
+    </div>
+    <div class="tab-content active" id="tabLayers">
+      <div class="layer-grid" id="layerGrid" style="display:none;"></div>
+    </div>
+    <div class="tab-content" id="tabOverlay">
+      <div class="overlay-section" id="overlaySection" style="display:none;">
+        <h2>Superposición de capas</h2>
+        <div style="display:flex;gap:6px;margin-bottom:8px;">
+          <button class="btn btn-sm overlay-mode-btn active" data-mode="material" style="flex:1;padding:4px 8px;">🎨 Por material</button>
+          <button class="btn btn-sm overlay-mode-btn" data-mode="rainbow" style="flex:1;padding:4px 8px;">🌈 Por capa</button>
+        </div>
+        <div class="overlay-toggles" id="overlayToggles"></div>
+        <div class="overlay-svg-wrap"><svg id="overlaySvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130" width="100%"></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <span id="statusInfo">Esperando datos...</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div><span id="loadingText">Generando vectores...</span></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// DOM
+// ═══════════════════════════════════════════════════════
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const toastEl = $('#toast');
+const layerGrid = $('#layerGrid');
+const emptyState = $('#emptyState');
+const downloadAllBtn = $('#downloadAllBtn');
+const recalculateBtn = $('#recalculateBtn');
+const statusInfo = $('#statusInfo');
+const loadingOverlay = $('#loadingOverlay');
+const loadingText = $('#loadingText');
+const controlsRow = $('#controlsRow');
+const strokeWidthRange = $('#strokeWidthRange');
+const strokeWidthVal = $('#strokeWidthVal');
+const fillToggle = $('#fillToggle');
+const overlaySection = $('#overlaySection');
+const overlayToggles = $('#overlayToggles');
+const overlaySvg = $('#overlaySvg');
+const tabBar = $('#tabBar');
+const tabLayers = $('#tabLayers');
+const tabOverlay = $('#tabOverlay');
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab' + tabName.charAt(0).toUpperCase() + tabName.slice(1)));
+}
+// Tab click handlers
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+let g_strokeWidth = 1.5;
+let g_fillEnabled = false;
+
+function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); setTimeout(() => toastEl.classList.remove('show'), 2500); }
+function setLoading(t) { if (loadingText) loadingText.textContent = t; loadingOverlay.classList.add('show'); }
+function hideLoading() { loadingOverlay.classList.remove('show'); }
+
+// ═══════════════════════════════════════════════════════
+// COLOR PALETTE for San Juan heightmap (copied from app.js)
+// ═══════════════════════════════════════════════════════
+const SAN_JUAN_COLORS = [
+  { r:255,g:242,b:243, h:6.793 }, { r:255,g:214,b:217, h:6.216 },
+  { r:255,g:168,b:176, h:5.659 }, { r:255,g:128,b:137, h:5.122 },
+  { r:255,g:92,b:102,  h:4.607 }, { r:255,g:59,b:71,   h:4.113 },
+  { r:230,g:34,b:46,   h:3.642 }, { r:214,g:28,b:35,   h:3.193 },
+  { r:230,g:74,b:46,   h:2.768 }, { r:242,g:116,b:36,  h:2.367 },
+  { r:250,g:159,b:42,  h:1.990 }, { r:247,g:199,b:49,  h:1.640 },
+  { r:255,g:242,b:61,  h:1.317 }, { r:215,g:242,b:61,  h:1.022 },
+  { r:161,g:230,b:53,  h:0.758 }, { r:102,g:217,b:43,  h:0.525 },
+  { r:44,g:209,b:53,   h:0.327 }, { r:31,g:196,b:103,  h:0.168 },
+  { r:43,g:230,b:176,  h:0.054 }, { r:54,g:212,b:255,  h:0 },
+];
+const SAN_JUAN_MAX_H = 6.793;
+
+const TERRAIN_LIB = {
+  'san-juan': { name:'San Juan', depthUrl:'maqueta/heightmap_final.png', layers:20, maxHeight:1.6, smoothing:3, sizeX:130, sizeZ:130 },
+  'san-juan-corregido': { name:'San Juan Corregido', depthUrl:'maqueta/heightmap_cuadrado.png', layers:30, maxHeight:2.8, smoothing:1, sizeX:130, sizeZ:130, isColorMap:true },
+  'san-juan-color': { name:'San Juan Color', depthUrl:'maqueta/heightmapfinalfinal.png', layers:30, maxHeight:2.8, smoothing:1, sizeX:130, sizeZ:130, isColorMap:true },
+};
+
+function loadColorHeightmap(img, arr, RES) {
+  const iw = img.naturalWidth || img.width || 2026;
+  const ih = img.naturalHeight || img.height || 1119;
+  const c = document.createElement('canvas');
+  c.width = iw; c.height = ih;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const pix = ctx.getImageData(0, 0, iw, ih).data;
+  const full = new Float32Array(iw * ih);
+  for (let y = 0; y < ih; y++) {
+    for (let x = 0; x < iw; x++) {
+      const i = (y * iw + x) * 4;
+      const r = pix[i], g = pix[i+1], b = pix[i+2], a = pix[i+3];
+      if (a < 128 || (r < 10 && g < 10 && b < 10)) { full[y*iw+x] = 0; continue; }
+      let bestDist = Infinity, bestH = 0;
+      for (const c2 of SAN_JUAN_COLORS) {
+        const dr = r - c2.r, dg = g - c2.g, db = b - c2.b;
+        const dist = dr*dr + dg*dg + db*db;
+        if (dist < bestDist) { bestDist = dist; bestH = c2.h; }
+      }
+      full[y*iw+x] = Math.max(0, Math.min(1, bestH / SAN_JUAN_MAX_H));
+    }
+  }
+  for (let y = 0; y < RES; y++) {
+    for (let x = 0; x < RES; x++) {
+      const gx = (x / (RES - 1)) * (iw - 1);
+      const gy = (y / (RES - 1)) * (ih - 1);
+      const ix = Math.min(Math.floor(gx), iw - 2);
+      const iy = Math.min(Math.floor(gy), ih - 2);
+      const fx = gx - ix, fy = gy - iy;
+      const a = full[iy*iw+ix];
+      const b = full[iy*iw+ix+1];
+      const c = full[(iy+1)*iw+ix];
+      const d = full[(iy+1)*iw+ix+1];
+      arr[y*RES+x] = a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
+    }
+  }
+}
+
+function loadImageToData(img, arr, RES) {
+  const c = document.createElement('canvas');
+  c.width = RES; c.height = RES;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0, RES, RES);
+  const pix = ctx.getImageData(0, 0, RES, RES).data;
+  for (let i = 0; i < RES * RES; i++)
+    arr[i] = Math.max(0, Math.min(1, (pix[i*4]*0.299 + pix[i*4+1]*0.587 + pix[i*4+2]*0.116) / 255));
+}
+
+function loadTerrainById(id) {
+  const t = TERRAIN_LIB[id];
+  if (!t) { toast('Terreno "' + id + '" no encontrado'); return; }
+  setLoading('Cargando ' + t.name + '...');
+  const img = new Image();
+  const RES = 128;
+  const heightData = new Float32Array(RES * RES);
+  img.onload = () => {
+    if (t.isColorMap) {
+      loadColorHeightmap(img, heightData, RES);
+    } else {
+      loadImageToData(img, heightData, RES);
+    }
+    processTerrainData({
+      heightData: Array.from(heightData),
+      resolution: RES,
+      layers: t.layers,
+      sizeX: t.sizeX,
+      sizeZ: t.sizeZ,
+      maxHeight: t.maxHeight,
+      smoothing: t.smoothing,
+      brillo: 0,
+      contraste: 1,
+      version: 2
+    });
+  };
+  img.onerror = () => { hideLoading(); toast('Error cargando imagen para ' + t.name); };
+  img.src = t.depthUrl;
+}
+
+// ═══════════════════════════════════════════════════════
+// BOUNDARY TRACING — generates closed SVG polygons per layer
+// Uses Moore-Neighbor tracing on binary grid (cell corners)
+// ═══════════════════════════════════════════════════════
+function generateContourPaths(heightData, origRES, threshold, sizeX, sizeZ) {
+  const scaleX = sizeX / (origRES - 1);
+  const scaleZ = sizeZ / (origRES - 1);
+
+  // Build binary grid: 1 if height >= threshold, 0 otherwise
+  // Then trace boundaries using Moore-Neighbor algorithm
+  const grid = [];
+  for (let y = 0; y < origRES; y++) {
+    grid[y] = [];
+    for (let x = 0; x < origRES; x++) {
+      grid[y][x] = heightData[y * origRES + x] >= threshold ? 1 : 0;
+    }
+  }
+
+  // Moore neighborhood: 8 directions, starting from top-left going clockwise
+  const mooreDirs = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
+
+  // Check if a pixel is a boundary pixel (has at least one 0 neighbor)
+  function isBoundary(y, x) {
+    if (y <= 0 || y >= origRES-1 || x <= 0 || x >= origRES-1) return true;
+    return grid[y][x] === 1 && (
+      grid[y-1][x] === 0 || grid[y+1][x] === 0 ||
+      grid[y][x-1] === 0 || grid[y][x+1] === 0 ||
+      grid[y-1][x-1] === 0 || grid[y-1][x+1] === 0 ||
+      grid[y+1][x-1] === 0 || grid[y+1][x+1] === 0
+    );
+  }
+
+  const visited = {}; // "y,x" -> true
+  const paths = [];
+
+  for (let y = 0; y < origRES; y++) {
+    for (let x = 0; x < origRES; x++) {
+      if (grid[y][x] !== 1 || visited[y+','+x]) continue;
+      if (!isBoundary(y, x)) { visited[y+','+x] = true; continue; }
+
+      // Found a boundary pixel. Trace the outer boundary.
+      const path = [];
+      let cy = y, cx = x;
+      let dir = 7; // start searching from direction 7 (top-left)
+
+      do {
+        visited[cy+','+cx] = true;
+        // Convert grid coords to physical coords (center of cell)
+        path.push([
+          (cx / (origRES - 1)) * sizeX,
+          (cy / (origRES - 1)) * sizeZ
+        ]);
+
+        // Moore-Neighbor: search from (dir+5)%8 to (dir+5+8)%8 (counter-clockwise from previous direction)
+        let found = false;
+        for (let i = 0; i < 8; i++) {
+          const nd = (dir + 5 + i) % 8;
+          const ny = cy + mooreDirs[nd][1];
+          const nx = cx + mooreDirs[nd][0];
+          if (ny >= 0 && ny < origRES && nx >= 0 && nx < origRES &&
+              grid[ny][nx] === 1 && isBoundary(ny, nx)) {
+            cy = ny;
+            cx = nx;
+            dir = nd;
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) break; // isolated pixel
+
+        // Safety: prevent infinite loops on large contours
+        if (path.length > origRES * origRES * 4) break;
+      } while (cy !== y || cx !== x);
+
+      if (path.length >= 3) {
+        paths.push(path);
+      }
+    }
+  }
+
+  return paths;
+}
+
+function pathsToSvgPolygons(paths) {
+  if (!paths || paths.length === 0) return '';
+  let d = '';
+  for (const path of paths) {
+    d += 'M';
+    for (let i = 0; i < path.length; i++) {
+      d += path[i][0].toFixed(2) + ',' + path[i][1].toFixed(2);
+      if (i < path.length - 1) d += 'L';
+    }
+    d += 'Z';
+  }
+  return d;
+}
+
+// ═══════════════════════════════════════════════════════
+// GENERATE ALL LAYERS
+// ═══════════════════════════════════════════════════════
+function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap, matId) {
+  const layers = [];
+  for (let l = 1; l <= numLayers; l++) {
+    const lo = (l - 1) / numLayers;
+    const hi = l / numLayers;
+    const grid = [];
+    for (let y = 0; y < RES; y++) {
+      grid[y] = [];
+      for (let x = 0; x < RES; x++) {
+        const idx = y * RES + x;
+        // If material filter is active, only include cells with this material
+        let v = heightData[idx];
+        if (materialMap && matId !== undefined) {
+          if (materialMap[idx] !== matId) {
+            v = 0; // Non-matching cells treated as background
+          }
+        }
+        const inBand = v > 0.001 && (l === numLayers ? (v >= lo) : (v >= lo && v < hi));
+        grid[y][x] = inBand ? 1 : 0;
+      }
+    }
+    const paths = generateContourPathsFromGrid(grid, RES, sizeX, sizeZ);
+    const pathData = pathsToSvgPolygons(paths);
+    layers.push({
+      index: l,
+      material: matId !== undefined ? matId : -1, // -1 = combined, 0=tierra, 1=agua
+      threshold: hi,
+      polygonCount: paths.length,
+      pathData: pathData,
+      empty: paths.length === 0
+    });
+  }
+  return layers;
+}
+
+// Version of generateContourPaths that takes a pre-built binary grid
+function generateContourPathsFromGrid(grid, origRES, sizeX, sizeZ) {
+  const scaleX = sizeX / (origRES - 1);
+  const scaleZ = sizeZ / (origRES - 1);
+  const mooreDirs = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
+  function isBoundary(y, x) {
+    if (y <= 0 || y >= origRES-1 || x <= 0 || x >= origRES-1) return true;
+    return grid[y][x] === 1 && (
+      grid[y-1][x] === 0 || grid[y+1][x] === 0 ||
+      grid[y][x-1] === 0 || grid[y][x+1] === 0 ||
+      grid[y-1][x-1] === 0 || grid[y-1][x+1] === 0 ||
+      grid[y+1][x-1] === 0 || grid[y+1][x+1] === 0
+    );
+  }
+  const visited = {};
+  const paths = [];
+  for (let y = 0; y < origRES; y++) {
+    for (let x = 0; x < origRES; x++) {
+      if (grid[y][x] !== 1 || visited[y+','+x]) continue;
+      if (!isBoundary(y, x)) { visited[y+','+x] = true; continue; }
+      const path = [];
+      let cy = y, cx = x;
+      let dir = 7;
+      do {
+        visited[cy+','+cx] = true;
+        path.push([
+          (cx / (origRES - 1)) * sizeX,
+          (cy / (origRES - 1)) * sizeZ
+        ]);
+        let found = false;
+        for (let i = 0; i < 8; i++) {
+          const nd = (dir + 5 + i) % 8;
+          const ny = cy + mooreDirs[nd][1];
+          const nx = cx + mooreDirs[nd][0];
+          if (ny >= 0 && ny < origRES && nx >= 0 && nx < origRES &&
+              grid[ny][nx] === 1 && isBoundary(ny, nx)) {
+            cy = ny; cx = nx; dir = nd; found = true; break;
+          }
+        }
+        if (!found) break;
+        if (path.length > origRES * origRES * 4) break;
+      } while (cy !== y || cx !== x);
+      if (path.length >= 3) paths.push(path);
+    }
+  }
+  return paths;
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER LAYER CARDS
+// ═══════════════════════════════════════════════════════
+let currentLayers = [];
+let svgWidth = 500, svgHeight = 500;
+
+let g_origRES = 128;
+let g_modelScaleX = 1;
+let g_modelScaleZ = 1;
+let g_layerConfig = {}; // {index: {name, color}} from editor
+let g_materialMap = null; // Uint8Array of material IDs per vertex
+let g_materials = null; // [{id, name, color}]
+let g_numLayers = 15;
+
+function renderLayers(layers, terrainWidth, terrainDepth) {
+  currentLayers = layers;
+  emptyState.style.display = 'none';
+  layerGrid.style.display = 'grid';
+  tabBar.style.display = 'flex';
+  switchTab('layers');
+  layerGrid.innerHTML = '';
+  downloadAllBtn.disabled = false;
+  controlsRow.style.display = 'flex';
+
+  // The contour padding adds a ring of zero cells around the data.
+  // Physical coords for padding cells are [-scale, size+scale].
+  // Expand viewBox to include them so the outer ring is visible.
+  const padX = terrainWidth / (g_origRES - 1);
+  const padZ = terrainDepth / (g_origRES - 1);
+  const mgn = Math.max(padX, padZ) + 0.5;
+  svgWidth = 500;
+  svgHeight = 500 * (terrainDepth / terrainWidth);
+  const viewBox = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
+
+  const hueStep = 360 / Math.max(layers.length, 1);
+  for (const layer of layers) {
+    const card = document.createElement('div');
+    card.className = 'layer-card';
+
+    const header = document.createElement('div');
+    header.className = 'layer-card-header';
+
+    const num = document.createElement('span');
+    num.className = 'num';
+    const matPrefix = layer.material === 1 ? '🌊 Agua ' : '🏔 Tierra ';
+    const cfg = g_layerConfig && g_layerConfig[layer.index];
+    num.textContent = matPrefix + (cfg ? cfg.name : ('Capa ' + layer.index));
+    header.appendChild(num);
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    const pct = Math.round((layer.index / g_numLayers) * 100);
+    const areaDesc = layer.empty ? 'Sin forma' : layer.polygonCount + ' polígono' + (layer.polygonCount !== 1 ? 's' : '');
+    label.textContent = layer.empty ? 'Vacía' : pct + '% altura · ' + areaDesc + ' · ' + (layer.material === 1 ? 'Agua' : 'Tierra');
+    header.appendChild(label);
+
+    const dlBtn = document.createElement('button');
+    dlBtn.className = 'btn dl-btn';
+    dlBtn.textContent = 'Descargar SVG';
+    dlBtn.disabled = layer.empty;
+    dlBtn.addEventListener('click', () => downloadLayerSvg(layer.index, layer.material));
+    header.appendChild(dlBtn);
+
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'layer-card-body';
+
+    let svgContent;
+    if (layer.empty) {
+      svgContent = '<rect width="100%" height="100%" fill="#0e0e14"/><text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Vacía en esta capa</text>';
+    } else {
+      // Material-based color
+      const matColor = layer.material === 1
+        ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+        : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+      const fillColor = matColor;
+      // Apply model scale transform so vectors match the 3D model's visual size
+      const cx = terrainWidth / 2;
+      const cy = terrainDepth / 2;
+      const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+        ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+        : '';
+      svgContent = '<rect width="100%" height="100%" fill="#0e0e14"/>' +
+        '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="0.5" opacity="0.9"' + scaleStr + '/>';
+    }
+    body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent + '</svg>';
+    card.appendChild(body);
+    layerGrid.appendChild(card);
+  }
+
+  statusInfo.textContent = layers.length + ' capas vectorizadas';
+  hideLoading();
+  // Setup overlay
+  setupOverlayToggles();
+  toast('Vectores generados para ' + layers.length + ' capas');
+}
+
+// ═══════════════════════════════════════════════════════
+// DOWNLOAD
+// ═══════════════════════════════════════════════════════
+function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, material) {
+  const numLayers = currentLayers.length;
+  const matColor = material === 1
+    ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+    : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+  const fillColor = matColor;
+  const padX = terrainWidth / (g_origRES - 1);
+  const padZ = terrainDepth / (g_origRES - 1);
+  const mgn = Math.max(padX, padZ) + 0.5;
+  const vb = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
+  const cx = terrainWidth / 2;
+  const cy = terrainDepth / 2;
+  const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+    ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+    : '';
+  const svgPath = empty ? '' :
+    '<path d="' + pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="0.5" opacity="0.9"' + scaleStr + '/>';
+  const txt = empty ?
+    '<text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Vacía</text>' : '';
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="800" height="' + (800 * (terrainDepth + 2*mgn) / (terrainWidth + 2*mgn)) + '">' +
+    '<rect width="100%" height="100%" fill="#0e0e14"/>' +
+    svgPath + txt +
+    '</svg>';
+}
+
+function downloadLayerSvg(layerIndex, material) {
+  const layer = currentLayers.find(l => l.index === layerIndex && l.material === material);
+  if (!layer || layer.empty) { toast('Esta capa no tiene contorno'); return; }
+  const svg = buildLayerSvg(layerIndex, layer.pathData, terrainWidth, terrainDepth, layer.empty, material);
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const matName = material === 1 ? 'agua' : 'tierra';
+  a.download = 'capa_' + matName + '_' + layerIndex.toString().padStart(2, '0') + '.svg';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Capa ' + matName + ' ' + layerIndex + ' descargada');
+}
+
+function downloadAll() {
+  if (typeof JSZip === 'undefined') {
+    toast('JSZip no disponible, descargando individualmente...');
+    for (const layer of currentLayers) {
+      if (layer.empty) continue;
+      const svg = buildLayerSvg(layer.index, layer.pathData, terrainWidth, terrainDepth, layer.empty, layer.material);
+      const blob = new Blob([svg], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const matName = layer.material === 1 ? 'agua' : 'tierra';
+      a.download = 'capa_' + matName + '_' + layer.index.toString().padStart(2, '0') + '.svg';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+    toast('Todas las capas descargadas');
+    return;
+  }
+  setLoading('Comprimiendo ZIP...');
+  setTimeout(async () => {
+    try {
+      const zip = new JSZip();
+      let count = 0;
+      for (const layer of currentLayers) {
+        if (layer.empty) continue;
+        const svg = buildLayerSvg(layer.index, layer.pathData, terrainWidth, terrainDepth, layer.empty, layer.material);
+        const matName = layer.material === 1 ? 'agua' : 'tierra';
+        zip.file('capa_' + matName + '_' + layer.index.toString().padStart(2, '0') + '.svg', svg);
+        count++;
+      }
+      const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'capas_vectorizadas.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+      hideLoading();
+      toast(count + ' capas comprimidas en ZIP');
+    } catch (e) {
+      hideLoading();
+      toast('Error al crear ZIP: ' + e.message);
+    }
+  }, 50);
+}
+downloadAllBtn.addEventListener('click', downloadAll);
+
+// ═══════════════════════════════════════════════════════
+// OVERLAY: superposed layer viewer with toggle checkboxes
+// ═══════════════════════════════════════════════════════
+let overlayLayerStates = {}; // "index_material" -> true/false
+let overlayMode = 'material'; // 'material' = Tierra/Agua colors, 'rainbow' = hue wheel
+
+function getOverlayColor(layer, mode) {
+  if (mode === 'rainbow') {
+    // Each layer gets a distinct hue - use a wide spread that accounts for both tierra and agua
+    const total = currentLayers.length || 1;
+    const hue = (layer.index / total) * 300; // 0-300 range avoids wrapping back to red
+    return 'hsl(' + Math.round(hue) + ',70%,55%)';
+  } else {
+    // Material-based: Tierra=brown, Agua=blue
+    return layer.material === 1
+      ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+      : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+  }
+}
+
+function updateOverlay() {
+  if (currentLayers.length === 0) return;
+  const padX = terrainWidth / (g_origRES - 1);
+  const padZ = terrainDepth / (g_origRES - 1);
+  const mgn = Math.max(padX, padZ) + 0.5;
+  const vb = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
+  const cx = terrainWidth / 2;
+  const cy = terrainDepth / 2;
+  const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+    ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+    : '';
+  let paths = '';
+  for (const layer of currentLayers) {
+    const key = layer.index + '_' + layer.material;
+    if (layer.empty || overlayLayerStates[key] === false) continue;
+    const color = getOverlayColor(layer, overlayMode);
+    paths += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="0.3" opacity="0.85"' + scaleStr + '/>';
+  }
+  overlaySvg.setAttribute('viewBox', vb);
+  let content = '<rect width="100%" height="100%" fill="#0e0e14"/>';
+
+  // When in material mode, also render a water overlay from materialMap
+  if (overlayMode === 'material' && g_materialMap && g_materials) {
+    const waterMat = g_materials.find(m => m.id === 1);
+    if (waterMat && overlayLayerStates['water'] !== false) {
+      const waterGrid = [];
+      for (let y = 0; y < g_origRES; y++) {
+        waterGrid[y] = [];
+        for (let x = 0; x < g_origRES; x++) {
+          waterGrid[y][x] = g_materialMap[y * g_origRES + x] === 1 ? 1 : 0;
+        }
+      }
+      const waterPaths = generateContourPathsFromGrid(waterGrid, g_origRES, terrainWidth, terrainDepth);
+      const waterPathData = pathsToSvgPolygons(waterPaths);
+      if (waterPathData) {
+        const waterColor = waterMat.color || '#4a9eff';
+        content += '<path d="' + waterPathData + '" fill="' + waterColor + '" stroke="' + waterColor + '" stroke-width="0.5" opacity="0.5"' + scaleStr + '/>';
+      }
+    }
+  }
+
+  content += paths;
+  overlaySvg.innerHTML = content;
+}
+
+function toggleOverlayLayer(index, material) {
+  const key = index + '_' + material;
+  if (overlayLayerStates[key] === undefined) overlayLayerStates[key] = true;
+  overlayLayerStates[key] = !overlayLayerStates[key];
+  const label = overlayToggles.querySelector('label[data-key="' + key + '"]');
+  if (label) label.classList.toggle('off', !overlayLayerStates[key]);
+  updateOverlay();
+}
+
+function setupOverlayToggles() {
+  overlayLayerStates = {};
+  overlayToggles.innerHTML = '';
+  overlaySection.style.display = 'block';
+
+  // Bind overlay mode buttons (only once)
+  if (!window._overlayModeBound) {
+    window._overlayModeBound = true;
+    document.querySelectorAll('.overlay-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.overlay-mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        overlayMode = btn.dataset.mode;
+        updateOverlay();
+      });
+    });
+  }
+
+  for (const layer of currentLayers) {
+    const key = layer.index + '_' + layer.material;
+    overlayLayerStates[key] = true;
+    const label = document.createElement('label');
+    label.setAttribute('data-key', key);
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.addEventListener('change', () => toggleOverlayLayer(layer.index, layer.material));
+    const color = getOverlayColor(layer, overlayMode);
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:' + color + ';display:inline-block;';
+    label.appendChild(dot);
+    label.appendChild(cb);
+    const matPrefix = layer.material === 1 ? 'Agua ' : 'Tierra ';
+    label.appendChild(document.createTextNode(' ' + matPrefix + 'Capa ' + layer.index));
+    overlayToggles.appendChild(label);
+  }
+  // Add water layer toggle if material data available (material mode only)
+  if (g_materialMap) {
+    const waterLabel = document.createElement('label');
+    waterLabel.setAttribute('data-key', 'water_1');
+    const waterCb = document.createElement('input');
+    waterCb.type = 'checkbox';
+    waterCb.checked = true;
+    waterCb.addEventListener('change', () => {
+      overlayLayerStates['water'] = waterCb.checked;
+      waterLabel.classList.toggle('off', !waterCb.checked);
+      updateOverlay();
+    });
+    const waterMat = g_materials ? g_materials.find(m => m.id === 1) : null;
+    const waterDot = document.createElement('span');
+    waterDot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:' + (waterMat ? waterMat.color : '#4a9eff') + ';display:inline-block;';
+    waterLabel.appendChild(waterDot);
+    waterLabel.appendChild(waterCb);
+    waterLabel.appendChild(document.createTextNode(' Agua 🏝'));
+    waterLabel.style.borderColor = waterMat ? waterMat.color : '#4a9eff';
+    overlayToggles.appendChild(waterLabel);
+    overlayLayerStates['water'] = true;
+  }
+  updateOverlay();
+}
+
+// Render overlay after material data loads
+function renderOverlay() {
+  setupOverlayToggles();
+}
+
+// ═══════════════════════════════════════════════════════
+// STROKE WIDTH & FILL CONTROLS
+// ═══════════════════════════════════════════════════════
+function rerenderFromCurrent() {
+  if (currentLayers.length === 0) return;
+  g_strokeWidth = parseFloat(strokeWidthRange.value);
+  g_fillEnabled = fillToggle.checked;
+  strokeWidthVal.textContent = g_strokeWidth.toFixed(1);
+  renderLayers(currentLayers, terrainWidth, terrainDepth);
+  updateOverlay(); // keep overlay in sync
+}
+
+strokeWidthRange.addEventListener('input', rerenderFromCurrent);
+fillToggle.addEventListener('change', rerenderFromCurrent);
+
+// ═══════════════════════════════════════════════════════
+// TERRAIN DATA PROCESSING
+// ═══════════════════════════════════════════════════════
+let terrainWidth = 130;
+let terrainDepth = 130;
+
+function processTerrainData(data) {
+  setLoading('Generando vectores...');
+  // Support both postMessage format (fields at top level) and JSON preset format (fields inside data.params)
+  const p = data.params || {};
+  const RES = data.resolution || p.resolution || 128;
+  g_origRES = RES;
+  const numLayers = data.layers || p.layers || 15;
+  g_numLayers = numLayers;
+  // Store layer config for custom names/colors
+  g_layerConfig = data.layerConfig || p.layerConfig || {};
+  // If no config loaded, generate defaults matching the editor's default colors
+  if (Object.keys(g_layerConfig).length === 0) {
+    const defaultColors = [
+      '#4a9eff', '#6db36d', '#c4a265', '#d4915a', '#b87333',
+      '#8b7355', '#a0a060', '#7c9c7c', '#6b8e6b', '#b8860b',
+      '#9acd32', '#cd853f', '#deb887', '#8fbc8f', '#66cdaa'
+    ];
+    for (let l = 1; l <= numLayers; l++) {
+      g_layerConfig[l] = {
+        name: 'Capa ' + l,
+        color: defaultColors[(l - 1) % defaultColors.length],
+        visible: true
+      };
+    }
+  }
+  // Model scale: transforms the SVG paths so they match the 3D model's size
+  // Check both top-level (from editor postMessage) and data.params (from saved JSON)
+  g_modelScaleX = data.modelScaleX || p.modelScaleX || 1;
+  g_modelScaleZ = data.modelScaleZ || p.modelScaleZ || 1;
+  terrainWidth = data.sizeX || p.sizeX || 130;
+  terrainDepth = data.sizeZ || p.sizeZ || 130;
+
+  // Get the height data
+  let rawHeight;
+  if (data.heightData) {
+    rawHeight = new Float32Array(data.heightData);
+  } else {
+    toast('Error: no hay datos de altura');
+    hideLoading();
+    return;
+  }
+
+  // Apply smoothing (same as main app)
+  const smoothed = new Float32Array(rawHeight);
+  const smoothPasses = data.smoothing || p.smoothing || 0;
+  for (let p = 0; p < smoothPasses; p++) {
+    const tmp = new Float32Array(RES * RES);
+    for (let y = 0; y < RES; y++) {
+      for (let x = 0; x < RES; x++) {
+        const idx = y * RES + x;
+        if (smoothed[idx] <= 0.001) { tmp[idx] = 0; continue; }
+        let s = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < RES && ny >= 0 && ny < RES) {
+            const v = smoothed[ny * RES + nx];
+            if (v > 0.001) { s += v; n++; }
+          }
+        }
+        tmp[idx] = n > 0 ? s / n : smoothed[idx];
+      }
+    }
+    smoothed.set(tmp);
+  }
+
+  // Apply brightness/contrast
+  const b = data.brillo || p.brillo || 0;
+  const c = data.contraste || p.contraste || 1;
+  for (let i = 0; i < RES * RES; i++) {
+    if (smoothed[i] > 0.001) {
+      smoothed[i] = Math.max(0, Math.min(1, (smoothed[i] - 0.5) * c + 0.5 + b));
+    }
+  }
+
+  // Store material data BEFORE generating layers (needed for material filtering)
+  // Support both postMessage (top-level) and saved JSON (inside params or top-level)
+  if (data.materialMap) {
+    g_materialMap = new Uint8Array(data.materialMap);
+  } else if (p.materialMap) {
+    g_materialMap = new Uint8Array(p.materialMap);
+  } else {
+    g_materialMap = null;
+  }
+  // Materials config: from data.materials, params.materialColors, or defaults
+  if (data.materials) {
+    g_materials = data.materials;
+  } else if (p.materialColors) {
+    g_materials = [
+      { id: 0, name: 'Tierra', color: p.materialColors[0] || '#c4a265' },
+      { id: 1, name: 'Agua',   color: p.materialColors[1] || '#4a9eff' }
+    ];
+  } else {
+    g_materials = [
+      { id: 0, name: 'Tierra', color: '#c4a265' },
+      { id: 1, name: 'Agua',   color: '#4a9eff' }
+    ];
+  }
+
+  // Generate layers
+  let allLayers = [];
+  
+  // Tierra layers (material 0)
+  const tierraLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 0);
+  allLayers = allLayers.concat(tierraLayers);
+  
+  // Agua layers (material 1) if present
+  if (g_materialMap && g_materialMap.some(v => v === 1)) {
+    const aguaLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 1);
+    allLayers = allLayers.concat(aguaLayers);
+  }
+  
+  renderLayers(allLayers, terrainWidth, terrainDepth);
+
+  // Re-render overlay if material data changed
+  if (g_materialMap) renderOverlay();
+}
+
+// ═══════════════════════════════════════════════════════
+// RECEIVE DATA FROM EDITOR VIA postMessage
+// ═══════════════════════════════════════════════════════
+if (window.opener && window.opener !== window) {
+  recalculateBtn.style.display = '';
+  window.opener.postMessage('vector_viewer_ready', '*');
+  window.addEventListener('message', event => {
+    if (event.data && event.data.type === 'vector_data') {
+      processTerrainData(event.data);
+    }
+  });
+  recalculateBtn.addEventListener('click', () => {
+    setLoading('Recalculando vectores...');
+    window.opener.postMessage('vector_viewer_recalculate', '*');
+  });
+  setTimeout(() => {
+    if (currentLayers.length === 0) {
+      // No data received from editor, try loading from URL params
+      const urlParams = new URLSearchParams(window.location.search);
+      const fallbackId = urlParams.get('terrain') || urlParams.get('preset');
+      if (fallbackId && TERRAIN_LIB[fallbackId]) {
+        loadTerrainById(fallbackId);
+      } else if (fallbackId) {
+        // Load from server
+        setLoading('Cargando preset...');
+        fetch(window.location.origin + (window.location.origin.includes('localhost')||window.location.origin.includes('127.0.0.1')?'':'/3dlayerterraingenerator') + '/uploads/' + encodeURIComponent(fallbackId))
+          .then(r => { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+          .then(d => processTerrainData(d))
+          .catch(e => { hideLoading(); toast('Error: '+e.message); });
+      } else {
+        loadTerrainById('san-juan-corregido');
+      }
+    }
+  }, 5000);
+} else {
+  // Standalone mode with ?preset or test data
+  emptyState.querySelector('.title').textContent = 'Usá "Export Vector" desde el editor';
+  emptyState.querySelector('.sub').textContent = 'Abrí el editor principal, cargá un terreno y usá el botón "Export Vector" para ver las capas acá.';
+}
+
+// ═══════════════════════════════════════════════════════
+// FALLBACK: load from URL params (preset or terrain) or default
+// ═══════════════════════════════════════════════════════
+const urlParams = new URLSearchParams(window.location.search);
+const terrainFromUrl = urlParams.get('terrain') || urlParams.get('preset');
+
+if (!window.opener) {
+  if (terrainFromUrl && TERRAIN_LIB[terrainFromUrl]) {
+    // Load from terrain library by name
+    loadTerrainById(terrainFromUrl);
+  } else if (terrainFromUrl) {
+    // Load a saved preset from server
+    setLoading('Cargando preset...');
+    fetch(window.location.origin + (window.location.origin.includes('localhost')||window.location.origin.includes('127.0.0.1')?'':'/3dlayerterraingenerator') + '/uploads/' + encodeURIComponent(terrainFromUrl))
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(data => processTerrainData(data))
+      .catch(e => { hideLoading(); toast('Error cargando preset: ' + e.message); });
+  } else {
+    // Default: load San Juan Corregido
+    loadTerrainById('san-juan-corregido');
+  }
+}
+</script>
+</body>
+</html>

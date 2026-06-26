@@ -25,8 +25,8 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // --- Middleware ---
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '1000mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1000mb' }));
 
 // Serve static files
 app.use(BASE_PATH + '/', express.static(PUBLIC_DIR));
@@ -40,7 +40,7 @@ const storage = multer.diskStorage({
     cb(null, name);
   }
 });
-const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 200 * 1024 * 1024 } });
 
 // --- API Routes ---
 
@@ -90,6 +90,37 @@ app.delete(BASE_PATH + '/api/terrain/:id', (req, res) => {
   if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'Not found' });
   fs.unlinkSync(filepath);
   res.json({ success: true });
+});
+
+// Update/overwrite an existing terrain preset
+app.put(BASE_PATH + '/api/terrain/:id', (req, res) => {
+  const filepath = path.join(UPLOADS_DIR, req.params.id);
+  if (!fs.existsSync(filepath)) return res.status(404).json({ error: 'Not found' });
+  const data = req.body;
+  if (!data) return res.status(400).json({ error: 'No data provided' });
+  // Keep the original id/name if not provided
+  let existing = {};
+  try { existing = JSON.parse(fs.readFileSync(filepath, 'utf-8')); } catch(e) {}
+  const merged = { ...existing, ...data };
+  // Preserve original name unless a new one was sent
+  if (data.name) merged.name = data.name;
+  else merged.name = existing.name;
+  fs.writeFileSync(filepath, JSON.stringify(merged, null, 2));
+  res.json({ url: '/uploads/' + req.params.id, filename: req.params.id, success: true });
+});
+
+// Save a GLB file for a specific preset (so the viewer can load it directly)
+app.post(BASE_PATH + '/api/terrain/:id/glb', (req, res) => {
+  const glbFilename = req.params.id.replace(/\.json$/i, '') + '.glb';
+  const filepath = path.join(UPLOADS_DIR, glbFilename);
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const buffer = Buffer.concat(chunks);
+    fs.writeFileSync(filepath, buffer);
+    res.json({ url: '/uploads/' + glbFilename, filename: glbFilename, size: buffer.length });
+  });
+  req.on('error', err => res.status(500).json({ error: err.message }));
 });
 
 // Serve uploaded files

@@ -118,13 +118,27 @@ new ResizeObserver(() => {
 const loader = new GLTFLoader();
 let modelGroup = null;
 
-function loadGlb(url) {
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+
+function loadGlb(url, fileSize) {
   loader.load(url, gltf => {
     // Remove previous model
     if (modelGroup) { scene.remove(modelGroup); disposeModel(modelGroup); }
 
     modelGroup = gltf.scene;
     scene.add(modelGroup);
+
+    // If fileSize wasn't passed, try to get it via HEAD request
+    if (fileSize === undefined) {
+      fetch(url, { method: 'HEAD' }).then(function(r) {
+        var cl = r.headers.get('Content-Length');
+        if (cl) fileSize = parseInt(cl);
+      }).catch(function(){});
+    }
 
     // Compute bounding box and auto-fit camera
     const box = new THREE.Box3().setFromObject(modelGroup);
@@ -159,7 +173,9 @@ function loadGlb(url) {
     downloadBtn.download = 'terrain_model.glb';
 
     dropZone.classList.add('hidden');
-    infoBar.textContent = `GLB cargado · ${(size.x.toFixed(2))} × ${(size.y.toFixed(2))} × ${(size.z.toFixed(2))}`;
+    var sizeStr = size.x.toFixed(2) + ' x ' + size.y.toFixed(2) + ' x ' + size.z.toFixed(2);
+    if (fileSize) sizeStr += ' \u00B7 ' + formatSize(fileSize);
+    infoBar.textContent = 'GLB cargado \u00B7 ' + sizeStr;
     toast('Modelo GLB cargado');
 
     // Fix materials to use vertex colors
@@ -207,7 +223,7 @@ dropZone.addEventListener('drop', e => {
   const file = e.dataTransfer.files[0];
   if (file && (file.name.endsWith('.glb') || file.name.endsWith('.gltf'))) {
     const url = URL.createObjectURL(file);
-    loadGlb(url);
+    loadGlb(url, file.size);
   } else {
     toast('Solo archivos .glb o .gltf');
   }
@@ -218,7 +234,7 @@ $('#fileBtn').addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) {
     const url = URL.createObjectURL(fileInput.files[0]);
-    loadGlb(url);
+    loadGlb(url, fileInput.files[0].size);
   }
 });
 
@@ -238,10 +254,24 @@ if (window.opener && window.opener !== window) {
   // Listen for the GLB data
   window.addEventListener('message', event => {
     if (event.data && event.data.type === 'glb_data') {
-      const arrayBuffer = event.data.data;
-      const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      loadGlb(url);
+      var arrayBuffer = event.data.data;
+      var blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+      var url = URL.createObjectURL(blob);
+      loadGlb(url, arrayBuffer.byteLength);
+      // Also save the GLB to the server so direct URL works next time
+      var presetParam = params.get('preset');
+      if (presetParam) {
+        var glbFilename2 = presetParam.replace(/\\.json$/i, '') + '.glb';
+        if (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')) {
+          fetch(API_BASE + '/api/terrain/' + encodeURIComponent(presetParam) + '/glb', {
+            method: 'POST',
+            body: arrayBuffer,
+            headers: { 'Content-Type': 'application/octet-stream' }
+          }).then(function(r) {
+            if (r.ok) toast('GLB guardado en el servidor. Ya podés compartir este link.');
+          }).catch(function(){});
+        }
+      }
     }
   });
   // Timeout: if no data after 5s, show drop UI
@@ -252,10 +282,62 @@ if (window.opener && window.opener !== window) {
   }, 5000);
 }
 
-// If no opener, load from ?url= parameter
+// If no opener, load from ?url= parameter OR ?preset=/?terrain= parameter
 const params = new URLSearchParams(window.location.search);
-if (!window.opener && params.has('url')) {
-  loadGlb(params.get('url'));
+if (!window.opener) {
+  if (params.has('url')) {
+    loadGlb(params.get('url'));
+  } else if (params.has('preset')) {
+    const presetId = params.get('preset');
+    infoBar.textContent = 'Cargando preset: ' + presetId + '...';
+    const API_BASE = window.location.origin;
+    const BASE_PATH = (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')) ? '' : '/3dlayerterraingenerator';
+
+    // Try to load the saved GLB for this preset directly
+    var glbFilename = presetId.replace(/\\.json$/i, '') + '.glb';
+    var glbUrl = API_BASE + BASE_PATH + '/uploads/' + encodeURIComponent(glbFilename);
+
+    // Check if the GLB exists on the server first
+    fetch(glbUrl, { method: 'HEAD' }).then(function(r) {
+      if (r.ok) {
+        var size = r.headers.get('Content-Length');
+        var sizeNum = size ? parseInt(size) : 0;
+        // Skip garbage files smaller than 1KB — not a real GLB
+        if (sizeNum > 1000) {
+          loadGlb(glbUrl, sizeNum);
+        } else {
+          throw new Error('GLB too small or invalid (' + sizeNum + ' bytes)');
+        }
+      } else {
+        // GLB not found — show the helper message
+        throw new Error('GLB not found');
+      }
+    }).catch(function() {
+      // Fallback: fetch preset metadata and show helper message
+      infoBar.textContent = 'Preset encontrado, pero no hay GLB guardado. Usá "Ver GLB" desde el editor.';
+      fetch(API_BASE + BASE_PATH + '/uploads/' + encodeURIComponent(presetId))
+        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function(data) {
+          var name = data.name || presetId;
+          infoBar.textContent = 'Abrí el preset "' + name + '" en el editor y usá "Ver GLB"';
+          toast('Usá el botón "Ver GLB" desde el editor principal');
+          var mainUrl = window.location.origin + '/3dlayerterraingenerator/?preset=' + encodeURIComponent(presetId);
+          var link = document.createElement('a');
+          link.href = mainUrl;
+          link.textContent = 'Abrir en editor \u2192';
+          link.style.cssText = 'color:#4a9eff;font-size:14px;margin-top:12px;display:inline-block;';
+          document.querySelector('.drop-zone .sub').after(link);
+        })
+        .catch(function(err) {
+          infoBar.textContent = 'Error cargando preset: ' + err.message;
+          toast('Error al cargar preset desde el servidor');
+        });
+    });
+  } else if (params.has('terrain')) {
+    var terrainId = params.get('terrain');
+    infoBar.textContent = 'Abrí "' + terrainId + '" en el editor y usá "Ver GLB"';
+    toast('Usá el botón "Ver GLB" desde el editor principal');
+  }
 }
 </script>
 </body>

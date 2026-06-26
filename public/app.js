@@ -7,35 +7,53 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 // TERRAIN LIBRARY
 // ═══════════════════════════════════════════════════════
 const TERRAIN_LIB = {
-  'san-juan': { name:'San Juan', tags:'Relieve completo · fondo negro puro', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:20, maxHeight:4.0, smoothing:3 },
-  'san-juan-detailed': { name:'San Juan HD', tags:'Relieve detallado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:25, maxHeight:5.0, smoothing:2 },
-  'san-juan-topo': { name:'San Juan Topo', tags:'Desde topográfico · fondo negro', thumb:'maqueta/heightmap_topo.png', depthUrl:'maqueta/heightmap_topo.png', layers:18, maxHeight:4.5, smoothing:2 },
-  'san-juan-suave': { name:'San Juan Suave', tags:'Relieve suavizado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:15, maxHeight:3.0, smoothing:4 },
-  'san-juan-color': { name:'San Juan Color', tags:'Mapa de colores · relieve real 0-6.8m', thumb:'maqueta/heightmapfinalfinal.png', depthUrl:'maqueta/heightmapfinalfinal.png', layers:30, maxHeight:7.0, smoothing:1, isColorMap:true },
-  'default-hill': { name:'Colina Default', tags:'Terreno genérico', thumb:null, depthUrl:null, layers:15, maxHeight:3.0, smoothing:2, isDefault:true },
+  'san-juan': { name:'San Juan', tags:'Relieve completo · fondo negro puro', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:20, maxHeight:1.6, smoothing:3 },
+  'san-juan-detailed': { name:'San Juan HD', tags:'Relieve detallado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:25, maxHeight:2.0, smoothing:2 },
+  'san-juan-topo': { name:'San Juan Topo', tags:'Desde topográfico · fondo negro', thumb:'maqueta/heightmap_topo.png', depthUrl:'maqueta/heightmap_topo.png', layers:18, maxHeight:1.8, smoothing:2 },
+  'san-juan-suave': { name:'San Juan Suave', tags:'Relieve suavizado', thumb:'maqueta/heightmap_final.png', depthUrl:'maqueta/heightmap_final.png', layers:15, maxHeight:1.2, smoothing:4 },
+  'san-juan-color': { name:'San Juan Color', tags:'Mapa de colores · relieve real 0-6.8m', thumb:'maqueta/heightmapfinalfinal.png', depthUrl:'maqueta/heightmapfinalfinal.png', layers:30, maxHeight:2.8, smoothing:1, isColorMap:true },
+  'san-juan-corregido': { name:'San Juan Corregido', tags:'Cuadrado · mapa de colores', thumb:'maqueta/heightmap_cuadrado.png', depthUrl:'maqueta/heightmap_cuadrado.png', layers:30, maxHeight:2.8, smoothing:1, isColorMap:true },
+  'default-hill': { name:'Colina Default', tags:'Terreno genérico', thumb:null, depthUrl:null, layers:15, maxHeight:1.2, smoothing:2, isDefault:true },
 };
 
 // ═══════════════════════════════════════════════════════
-// STATE
+// GLOBALS
 // ═══════════════════════════════════════════════════════
+const HEIGHT_SCALE = 4; // slider 3 → altura real 12cm
 let RES = 128;
 let heightData = new Float32Array(RES * RES);
 let baseHeightData = new Float32Array(RES * RES);
 let needsRegen = true;
 let rebuildPending = false;
+let smoothRefHeight = -1; // -1 = not set, captured on mousedown for smooth flatten tool
+
 
 // Last known mouse position for frame-driven paint raycasting
 let lastMouseX = 0, lastMouseY = 0;
 
 const state = {
-  layers:15, maxHeight:3.0, smoothing:2,
+  layers:15, maxHeight:1.2, smoothing:2,
   brillo:0, contraste:1, resolution:128,
   sizeX:130, sizeZ:130,
+  modelScaleX:1, modelScaleZ:1,
   tool:'add', brushSize:20, brushFlow:30, brushStrength:0.5,
   viewMode:'solid', activeTerrain:'default-hill', paint3d:false,
   baseColor:'#c4a265', paintColor:'#e55336', paintAlpha:0.5,
   showBase:true,
 };
+
+// Layer configuration: each entry = { name, color, visible }
+// Indexed by layer number (1..N). Built dynamically in initLayerConfig().
+let layerConfig = {};
+
+// Material-based painting system
+// Each vertex can be painted with a material (Tierra=0, Agua=1, etc.)
+const MATERIALS = [
+  { id: 0, name: 'Tierra', color: '#c4a265' },
+  { id: 1, name: 'Agua',   color: '#4a9eff' }
+];
+let materialMap = null; // Uint8Array(RES*RES), 0=Tierra(default), 1=Agua
+let activeMaterialId = -1; // -1=none selected, 0=Tierra, 1=Agua
 
 let vertexColors = null;
 let colorData = null;
@@ -56,6 +74,16 @@ const toastEl = $('#toast');
 let toastTimer;
 function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500); }
 
+// Loading overlay with dynamic text
+function setLoading(text) {
+  const el = document.getElementById('loadingText');
+  if (el) el.textContent = text;
+  loadingOverlay.classList.add('show');
+}
+function hideLoading() {
+  loadingOverlay.classList.remove('show');
+}
+
 const heightCanvas = $('#heightPreviewCanvas');
 const paintOverlay = $('#paintOverlay');
 const hCtx = heightCanvas.getContext('2d');
@@ -70,7 +98,7 @@ paintOverlay.width = SZ; paintOverlay.height = SZ;
 function scheduleRebuild() {
   if (!rebuildPending && threeReady) {
     rebuildPending = true;
-    loadingOverlay.classList.add('show');
+    setLoading('Generando terreno...');
     requestAnimationFrame(() => { rebuildPending = false; rebuildTerrain(); });
   }
 }
@@ -95,110 +123,13 @@ const rightTerrainGrid = $('#rightTerrainGrid');
 const rightPresetGrid = $('#rightPresetGrid');
 const rightPresetName = $('#rightPresetName');
 const rightSavePresetBtn = $('#rightSavePresetBtn');
+const rightUpdatePresetBtn = $('#rightUpdatePresetBtn');
 
-// Override buildTerrainLibrary to also populate right panel
-const _origBuildLibrary = buildTerrainLibrary;
-buildTerrainLibrary = function() {
-  _origBuildLibrary();
-  // Also populate right panel
-  if (rightTerrainGrid) {
-    rightTerrainGrid.innerHTML = '';
-    for (const [id, t] of Object.entries(TERRAIN_LIB)) {
-      const card = document.createElement('div');
-      card.className = 'terrain-card' + (id === state.activeTerrain ? ' active' : '');
-      card.dataset.id = id;
-      const thumb = document.createElement('img'); thumb.className = 'thumb';
-      if (t.thumb) thumb.src = t.thumb;
-      else thumb.style.background = 'linear-gradient(180deg,#444 0%,#222 40%,#000 100%)';
-      const nameEl = document.createElement('div'); nameEl.className = 'name'; nameEl.textContent = t.name;
-      const tagsEl = document.createElement('div'); tagsEl.className = 'tags'; tagsEl.textContent = t.tags;
-      card.appendChild(thumb); card.appendChild(nameEl); card.appendChild(tagsEl);
-      if (id === state.activeTerrain) { const b = document.createElement('div'); b.className = 'badge'; b.textContent = 'ACTIVO'; card.appendChild(b); }
-      card.addEventListener('click', () => loadTerrain(id));
-      rightTerrainGrid.appendChild(card);
-    }
-  }
-};
-
-// Override loadPresets to also populate right panel
-const _origLoadPresets = loadPresets;
-loadPresets = async function() {
-  await _origLoadPresets();
-  // Also populate right panel
-  try {
-    const res = await fetch(API_BASE + '/api/terrains');
-    if (!res.ok) { if (rightPresetGrid) rightPresetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error al cargar presets</div>'; return; }
-    const list = await res.json();
-    if (!rightPresetGrid) return;
-    if (!list.length) {
-      rightPresetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">No hay presets guardados</div>';
-      return;
-    }
-    rightPresetGrid.innerHTML = '';
-    for (const item of list) {
-      const div = document.createElement('div'); div.className = 'preset-item';
-      const dateStr = item.id ? item.id.slice(0, 10) : '';
-      const d = document.createElement('span'); d.className = 'p-date'; d.textContent = dateStr;
-      const n = document.createElement('span'); n.className = 'p-name'; n.textContent = item.name || item.id;
-      const load = document.createElement('button'); load.className = 'p-load'; load.textContent = 'Cargar';
-      load.addEventListener('click', e => { e.stopPropagation(); loadPreset(item.id); });
-      const del = document.createElement('button'); del.className = 'p-del'; del.textContent = '✕';
-      del.addEventListener('click', e => { e.stopPropagation(); deletePreset(item.id); });
-      div.appendChild(d); div.appendChild(n); div.appendChild(load); div.appendChild(del);
-      rightPresetGrid.appendChild(div);
-    }
-  } catch (e) {
-    if (rightPresetGrid) rightPresetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error de conexión</div>';
-    console.error(e);
-  }
-};
-
-// Right panel save preset — with spinner
-if (rightSavePresetBtn) {
-  rightSavePresetBtn.addEventListener('click', () => {
-    const name = rightPresetName ? rightPresetName.value.trim() : '';
-    if (!name) { toast('Escribí un nombre para el preset'); if (rightPresetName) rightPresetName.focus(); return; }
-    const oldText = rightSavePresetBtn.textContent;
-    rightSavePresetBtn.innerHTML = '⏳'; // spinner indicator
-    rightSavePresetBtn.disabled = true;
-    const params = getStateSnapshot();
-    const payload = {
-      name: name,
-      params: params,
-      heightData: Array.from(heightData),
-      colorData: colorData ? Array.from(colorData) : null,
-      resolution: RES,
-      thumbnail: null,
-    };
-    (async () => {
-      try {
-        const res = await fetch(API_BASE + '/api/terrain', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        rightSavePresetBtn.innerHTML = oldText;
-        rightSavePresetBtn.disabled = false;
-        if (!res.ok) { toast('Error al guardar preset'); return; }
-        toast('Preset "' + name + '" guardado');
-        if (rightPresetName) rightPresetName.value = '';
-        loadPresets();
-      } catch (e) {
-        rightSavePresetBtn.innerHTML = oldText;
-        rightSavePresetBtn.disabled = false;
-        toast('Error de conexión al guardar preset');
-        console.error(e);
-      }
-    })();
-  });
-}
-if (rightPresetName) {
-  rightPresetName.addEventListener('keydown', e => { if (e.key === 'Enter' && rightSavePresetBtn) rightSavePresetBtn.click(); });
-}
-const terrainGrid = $('#terrainGrid');
-function buildTerrainLibrary() {
-  if (!terrainGrid) return;
-  terrainGrid.innerHTML = '';
+// buildTerrainLibrary: populate BOTH left-panel (#terrainGrid) and right-panel (#rightTerrainGrid)
+// Note: on fullscreencode.com only rightTerrainGrid exists; on local both exist.
+function _populateTerrainGrid(container) {
+  if (!container) return;
+  container.innerHTML = '';
   for (const [id, t] of Object.entries(TERRAIN_LIB)) {
     const card = document.createElement('div');
     card.className = 'terrain-card' + (id === state.activeTerrain ? ' active' : '');
@@ -211,9 +142,18 @@ function buildTerrainLibrary() {
     card.appendChild(thumb); card.appendChild(nameEl); card.appendChild(tagsEl);
     if (id === state.activeTerrain) { const b = document.createElement('div'); b.className = 'badge'; b.textContent = 'ACTIVO'; card.appendChild(b); }
     card.addEventListener('click', () => loadTerrain(id));
-    if (terrainGrid) terrainGrid.appendChild(card);
+    container.appendChild(card);
   }
 }
+function buildTerrainLibrary() {
+  _populateTerrainGrid(document.getElementById('terrainGrid'));
+  _populateTerrainGrid(rightTerrainGrid);
+}
+
+// Note: loadPresets (defined below at ~line 2165) populates #rightPresetGrid
+// via $presetGrid which points to the same element. No override needed.
+
+const terrainGrid = document.getElementById('terrainGrid');
 
 function loadTerrain(id) {
   const t = TERRAIN_LIB[id];
@@ -223,17 +163,37 @@ function loadTerrain(id) {
   state.smoothing = t.smoothing;
   state.brillo = 0; state.contraste = 1;
 
+  // Update URL for sharing
+  const url = new URL(window.location);
+  url.searchParams.set('terrain', id);
+  url.searchParams.delete('preset');
+  history.replaceState(null, '', url);
+  // Update model name hint
+  const nameHint = document.getElementById('modelNameHint');
+  if (nameHint) nameHint.textContent = t.name;
+  window._activePresetId = null;
+  window._activePresetName = t.name;
+  updateActivePresetBtnState();
+
   $('#layers').value = t.layers; $('#layersVal').textContent = t.layers;
-  $('#maxHeight').value = t.maxHeight; $('#heightVal').textContent = t.maxHeight.toFixed(1);
+  $('#maxHeight').value = t.maxHeight; $('#heightVal').textContent = (t.maxHeight * HEIGHT_SCALE).toFixed(1);
   $('#smoothing').value = t.smoothing; $('#smoothVal').textContent = t.smoothing;
   $('#brillo').value = 0; $('#brilloVal').textContent = '0.00';
   $('#contraste').value = 1; $('#contrasteVal').textContent = '1.00';
+  // Sync number inputs
+  document.querySelectorAll('.num-input').forEach(inp => {
+    const range = inp.previousElementSibling;
+    if (range && range.type === 'range') {
+      const span = range.closest('.control-group')?.querySelector('.value');
+      inp.value = span ? span.textContent : range.value;
+    }
+  });
 
   buildTerrainLibrary();
 
   if (t.isDefault) { genDefaultTerrain(); return; }
 
-  loadingOverlay.classList.add('show');
+  setLoading('Cargando ' + t.name + '...');
   if (t.depthUrl) {
     const img = new Image();
     img.onload = () => {
@@ -242,13 +202,13 @@ function loadTerrain(id) {
       } else {
         loadImageToData(img, heightData);
       }
-      loadingOverlay.classList.remove('show');
+      hideLoading();
       needsRegen = true;
       drawCanvas();
       if (threeReady) rebuildTerrain();
       toast('Terreno "' + t.name + '" cargado');
     };
-    img.onerror = () => { loadingOverlay.classList.remove('show'); toast(`Error cargando ${t.name}`); };
+    img.onerror = () => { hideLoading(); toast('Error cargando ' + t.name); };
     img.src = t.depthUrl;
   }
 }
@@ -357,6 +317,9 @@ function reallocateData(newRes) {
   const oldRes = RES;
   const oldData = new Float32Array(heightData);
   RES = newRes;
+  state.resolution = RES;
+  $('#resolution').value = RES;
+  $('#resolutionVal').textContent = RES;
   heightData = new Float32Array(RES * RES);
   baseHeightData = new Float32Array(RES * RES);
   // Resample old data into new resolution
@@ -427,20 +390,6 @@ function paintAt(cx, cy) {
   const hx = Math.floor(cx/SZ*RES), hy = Math.floor(cy/SZ*RES);
   const size = state.brushSize, flow = state.brushFlow/100, radius = size/2;
   const ceilRad = Math.ceil(radius);
-  // Pre-compute max height within brush area for smooth tool
-  let maxH = 0;
-  if (state.tool === 'smooth') {
-    for (let dy = -ceilRad; dy <= ceilRad; dy++) {
-      for (let dx = -ceilRad; dx <= ceilRad; dx++) {
-        const nx = hx+dx, ny = hy+dy;
-        if (nx>=0 && nx<RES && ny>=0 && ny<RES) {
-          if (Math.sqrt(dx*dx+dy*dy) <= radius) {
-            maxH = Math.max(maxH, heightData[ny*RES+nx]);
-          }
-        }
-      }
-    }
-  }
   for (let dy = -ceilRad; dy <= ceilRad; dy++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = hx+dx, py = hy+dy;
     if (px<0 || px>=RES || py<0 || py>=RES) continue;
@@ -448,25 +397,53 @@ function paintAt(cx, cy) {
     if (dist > radius) continue;
     const f = 1 - dist/radius;
     const cur = heightData[py*RES+px];
+    // Safety guard: floodfill is handled separately, never via brush
+    if (state.tool === 'floodfill') continue;
+    // In layers view mode, only modify cells in VISIBLE layers
+    if ((state.tool === 'add' || state.tool === 'sub') && state.viewMode === 'layers') {
+      const curLayer = Math.min(Math.ceil(cur * state.layers), state.layers);
+      if (cur > 0.001 && layerConfig[curLayer] && layerConfig[curLayer].visible === false) continue;
+    }
     if (state.tool === 'add') heightData[py*RES+px] = Math.min(1, cur + f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
     else if (state.tool === 'sub') heightData[py*RES+px] = Math.max(0, cur - f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
     else if (state.tool === 'smooth') {
-      // Raise terrain toward the highest layer within the brush area
-      if (cur < maxH) {
+      // Flatten toward reference height (captured on mousedown)
+      if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
         const amount = f * flow * (0.05 + Math.abs(state.brushStrength) * 0.20);
-        heightData[py*RES+px] = Math.min(maxH, cur + amount);
+        if (cur < smoothRefHeight) {
+          heightData[py*RES+px] = Math.min(smoothRefHeight, cur + amount);
+        } else {
+          heightData[py*RES+px] = Math.max(smoothRefHeight, cur - amount);
+        }
       }
     }
   }
   needsRegen = true;
 }
 
-paintOverlay.addEventListener('mousedown', e => { isPainting = true; const p=getCoords(e); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); });
+paintOverlay.addEventListener('mousedown', e => {
+  isPainting = true;
+  const p=getCoords(e);
+  // Capture reference height for smooth flatten tool
+  if (state.tool === 'smooth') {
+    const hx = Math.floor(p.x/SZ*RES), hy = Math.floor(p.y/SZ*RES);
+    smoothRefHeight = heightData[Math.min(hy,RES-1)*RES+Math.min(hx,RES-1)];
+  }
+  paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ);
+});
 window.addEventListener('mousemove', e => { if (!isPainting) return; const p=getCoords(e); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); });
 window.addEventListener('mouseup', () => { if (isPainting) { isPainting=false; if (threeReady) rebuildTerrain(); }});
 paintOverlay.addEventListener('mouseleave', () => { if (isPainting) { isPainting=false; if (threeReady) rebuildTerrain(); }});
 
-paintOverlay.addEventListener('touchstart', e => { e.preventDefault(); isPainting=true; const p=getCoords(e.touches[0]); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); }, {passive:false});
+paintOverlay.addEventListener('touchstart', e => {
+  e.preventDefault(); isPainting=true;
+  const p=getCoords(e.touches[0]);
+  if (state.tool === 'smooth') {
+    const hx = Math.floor(p.x/SZ*RES), hy = Math.floor(p.y/SZ*RES);
+    smoothRefHeight = heightData[Math.min(hy,RES-1)*RES+Math.min(hx,RES-1)];
+  }
+  paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ);
+}, {passive:false});
 paintOverlay.addEventListener('touchmove', e => { e.preventDefault(); if (!isPainting) return; const p=getCoords(e.touches[0]); paintAt(p.x,p.y); drawCanvas(); pCtx.clearRect(0,0,SZ,SZ); }, {passive:false});
 paintOverlay.addEventListener('touchend', e => { e.preventDefault(); isPainting=false; if (threeReady) rebuildTerrain(); }, {passive:false});
 
@@ -490,12 +467,12 @@ function loadFile(file) {
     toast('La imagen es demasiado grande (>50MB).');
     return;
   }
-  loadingOverlay.classList.add('show');
+  setLoading('Cargando imagen...');
   const reader = new FileReader();
-  reader.onerror = () => { loadingOverlay.classList.remove('show'); toast('Error al leer el archivo'); };
+  reader.onerror = () => { hideLoading(); toast('Error al leer el archivo'); };
   reader.onload = e => {
     const img = new Image();
-    img.onerror = () => { loadingOverlay.classList.remove('show'); toast('Error al decodificar la imagen'); };
+    img.onerror = () => { hideLoading(); toast('Error al decodificar la imagen'); };
     img.onload = () => {
       loadImageToData(img, heightData);
       baseHeightData.set(heightData);
@@ -506,7 +483,7 @@ function loadFile(file) {
       hz.classList.add('has-image');
       hz.querySelector('.icon').textContent = '✅';
       hz.querySelector('.label').textContent = file.name;
-      if (threeReady) { requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); }); } else { loadingOverlay.classList.remove('show'); }
+      if (threeReady) { requestAnimationFrame(() => { rebuildTerrain(); hideLoading(); }); } else { hideLoading(); }
       toast(`Heightmap "${file.name}" cargado`);
     };
     img.src = e.target.result;
@@ -518,6 +495,7 @@ function loadFile(file) {
 // THREE.JS
 // ═══════════════════════════════════════════════════════
 function initThree() {
+  setLoading('Inicializando 3D...');
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a12);
   camera = new THREE.PerspectiveCamera(40, viewport.clientWidth/viewport.clientHeight, 0.1, Math.max(state.sizeX, state.sizeZ) * 5);
   const camDist = Math.max(state.sizeX, state.sizeZ) * 1.8;
@@ -541,7 +519,7 @@ function initThree() {
   dl.position.set(8,15,5); dl.castShadow = true;
   dl.shadow.mapSize.width = 1024; dl.shadow.mapSize.height = 1024;
   dl.shadow.camera.near = 0.1; dl.shadow.camera.far = 30;
-  const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
+  const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight * HEIGHT_SCALE) * 1.5;
   dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
   dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
   dl.shadow.camera.far = shMax * 3;
@@ -684,15 +662,16 @@ function buildRuler(sizeX, sizeZ) {
 
   // Height label (Y axis) — vertical bar near front-left corner
   const maxH = state.maxHeight;
-  const barH = makeBar([-hx - 0.3, 0, -hz], [-hx - 0.3, maxH, -hz], 0xcf8a6f, barThick);
+  const visMaxH = maxH * HEIGHT_SCALE;
+  const barH = makeBar([-hx - 0.3, 0, -hz], [-hx - 0.3, visMaxH, -hz], 0xcf8a6f, barThick);
   if (barH) rulerGroup.add(barH);
   // Arrowhead at top, no arrow at bottom (ground level)
-  rulerGroup.add(makeCone([-hx - 0.3, maxH, -hz], [0,1,0], 0xcf8a6f, coneSize));
+  rulerGroup.add(makeCone([-hx - 0.3, visMaxH, -hz], [0,1,0], 0xcf8a6f, coneSize));
   // Top tick — visible bar
-  const tickH = makeBar([-hx - 0.45, maxH, -hz], [-hx - 0.15, maxH, -hz], 0xcf8a6f, barThick);
+  const tickH = makeBar([-hx - 0.45, visMaxH, -hz], [-hx - 0.15, visMaxH, -hz], 0xcf8a6f, barThick);
   if (tickH) rulerGroup.add(tickH);
-  const lblH = makeTextSprite(maxH.toFixed(1) + 'cm', '#cf8a6f', labelScale);
-  lblH.position.set(-hx - 0.7, maxH * 0.5, -hz);
+  const lblH = makeTextSprite(visMaxH.toFixed(1) + 'cm', '#cf8a6f', labelScale);
+  lblH.position.set(-hx - 0.7, visMaxH * 0.5, -hz);
   rulerGroup.add(lblH);
 
   rulerGroup.position.y = 0.01;
@@ -701,9 +680,9 @@ function buildRuler(sizeX, sizeZ) {
 
 function updateDimOverlay() {
   const w = state.sizeX.toFixed(1), d = state.sizeZ.toFixed(1);
-  const maxH = state.maxHeight.toFixed(1);
+  const actualH = (state.maxHeight * HEIGHT_SCALE).toFixed(1);
   const el = $('#dimOverlay');
-  if (el) el.textContent = `📐 ${w}cm × ${d}cm · Altura máx ${maxH}cm · Capas ${state.layers}`;
+  if (el) el.textContent = `📐 ${w}cm × ${d}cm · Altura máx ${actualH}cm · Capas ${state.layers}`;
 }
 
 function animate() {
@@ -718,8 +697,9 @@ function animate() {
     if (hits.length > 0) {
       const pt = hits[0].point;
       const sX = state.sizeX, sZ = state.sizeZ;
-      const gx = Math.round(((pt.x / sX) + 0.5) * (RES-1));
-      const gz = Math.round(((pt.z / sZ) + 0.5) * (RES-1));
+      const mSX = state.modelScaleX || 1, mSZ = state.modelScaleZ || 1;
+      const gx = Math.round(((pt.x / (sX * mSX)) + 0.5) * (RES-1));
+      const gz = Math.round(((pt.z / (sZ * mSZ)) + 0.5) * (RES-1));
       if (gx >= 0 && gx < RES && gz >= 0 && gz < RES) {
         paint3dAt(gx, gz);
         if (state.tool === 'color') {
@@ -738,6 +718,358 @@ function animate() {
 // ═══════════════════════════════════════════════════════
 // TERRAIN GEOMETRY
 // ═══════════════════════════════════════════════════════
+
+// Layer config management
+function getLayerIndexForHeight(v, numLayers) {
+  if (v <= 0.001) return 0; // background
+  return Math.min(Math.ceil(v * numLayers), numLayers);
+}
+
+function initLayerConfig(numLayers) {
+  const defaultColors = [
+    '#4a9eff', '#6db36d', '#c4a265', '#d4915a', '#b87333',
+    '#8b7355', '#a0a060', '#7c9c7c', '#6b8e6b', '#b8860b',
+    '#9acd32', '#cd853f', '#deb887', '#8fbc8f', '#66cdaa'
+  ];
+  const newConfig = {};
+  for (let l = 1; l <= numLayers; l++) {
+    // Preserve existing config if available
+    if (layerConfig && layerConfig[l]) {
+      newConfig[l] = { ...layerConfig[l] };
+    } else {
+      const ci = (l - 1) % defaultColors.length;
+      newConfig[l] = {
+        name: 'Capa ' + l,
+        color: defaultColors[ci],
+        visible: true
+      };
+    }
+  }
+  layerConfig = newConfig;
+  buildLayerConfigUI();
+}
+
+function buildLayerConfigUI() {
+  const container = document.getElementById('layerConfigList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  // Add "Apply layer colors" button at top
+  const applyBtn = document.createElement('button');
+  applyBtn.className = 'btn btn-primary';
+  applyBtn.textContent = '🎨 Pintar capas en 3D';
+  applyBtn.style.cssText = 'width:100%;margin-bottom:6px;padding:5px 8px;font-size:10px;';
+  applyBtn.addEventListener('click', () => {
+    applyLayerColorsToColorData();
+    if (state.viewMode !== 'solid') setViewMode('solid');
+    toast('Colores de capas aplicados permanentemente');
+  });
+  container.appendChild(applyBtn);
+
+  // View mode hint
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:9px;color:var(--text2);margin-bottom:6px;padding:2px 4px;text-align:center;';
+  if (state.viewMode === 'layers') {
+    hint.textContent = 'Vista Capas activa — colores en tiempo real';
+    hint.style.color = 'var(--accent)';
+  } else {
+    hint.textContent = 'Usá el botón "Capas" arriba para colorear en 3D';
+  }
+  container.appendChild(hint);
+
+  const numLayers = state.layers;
+  for (let l = 1; l <= numLayers; l++) {
+    const cfg = layerConfig[l] || { name: 'Capa '+l, color: '#888', visible: true };
+    const row = document.createElement('div');
+    row.className = 'layer-config-row';
+    row.dataset.layer = l;
+
+    // Visibility checkbox
+    const visCb = document.createElement('input');
+    visCb.type = 'checkbox';
+    visCb.className = 'lc-vis';
+    visCb.checked = cfg.visible !== false;
+    visCb.addEventListener('change', () => {
+      layerConfig[l].visible = visCb.checked;
+      row.classList.toggle('lc-hidden', !visCb.checked);
+      if (state.viewMode === 'layers' && threeReady) {
+        requestAnimationFrame(() => updateLayerColorsFromConfig());
+      }
+    });
+
+    // Color swatch (clickable to open native color picker)
+    const swatch = document.createElement('div');
+    swatch.className = 'lc-swatch';
+    swatch.style.background = cfg.color;
+    const cp = document.createElement('input');
+    cp.type = 'color';
+    cp.className = 'lc-colorpicker';
+    cp.value = cfg.color;
+    cp.addEventListener('input', () => {
+      swatch.style.background = cp.value;
+      layerConfig[l].color = cp.value;
+      if (state.viewMode === 'layers' && threeReady) {
+        requestAnimationFrame(() => updateLayerColorsFromConfig());
+      }
+    });
+    swatch.appendChild(cp);
+
+    // Name input
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'lc-name';
+    nameInput.value = cfg.name;
+    nameInput.maxLength = 32;
+    nameInput.addEventListener('input', () => {
+      layerConfig[l].name = nameInput.value || 'Capa ' + l;
+    });
+
+    // Layer number label
+    const numLabel = document.createElement('span');
+    numLabel.className = 'lc-num';
+    numLabel.textContent = l;
+
+    row.appendChild(visCb);
+    row.appendChild(numLabel);
+    row.appendChild(swatch);
+    row.appendChild(nameInput);
+    if (!cfg.visible) row.classList.add('lc-hidden');
+    container.appendChild(row);
+  }
+}
+
+function applyLayerColorsToColorData() {
+  // Write layer colors into colorData permanently
+  if (!colorData || colorData.length !== RES * RES * 3) {
+    colorData = new Float32Array(RES * RES * 3);
+  }
+  const N = state.layers;
+  const c = new THREE.Color();
+  for (let i = 0; i < RES * RES; i++) {
+    const z = Math.floor(i / RES);
+    const x = i % RES;
+    const v = baseHeightData[z * RES + x];
+    const li = getLayerIndexForHeight(v, N);
+    if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
+      colorData[i*3] = 0; colorData[i*3+1] = 0; colorData[i*3+2] = 0;
+    } else {
+      c.set(layerConfig[li].color);
+      colorData[i*3] = c.r; colorData[i*3+1] = c.g; colorData[i*3+2] = c.b;
+    }
+  }
+  if (threeReady && terrainMesh && state.viewMode === 'solid') {
+    const geo = terrainMesh.geometry;
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colorData, 3));
+    geo.attributes.color.needsUpdate = true;
+  }
+}
+
+function updateLayerColorsFromConfig() {
+  if (!terrainMesh || state.viewMode !== 'layers') return;
+  const N = state.layers;
+  const geo = terrainMesh.geometry;
+  const pos = geo.getAttribute('position');
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const z = Math.floor(i / RES);
+    const x = i % RES;
+    const v = baseHeightData[z * RES + x];
+    const li = getLayerIndexForHeight(v, N);
+    if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
+      colors[i*3] = 0; colors[i*3+1] = 0; colors[i*3+2] = 0; // hidden/invisible
+    } else {
+      c.set(layerConfig[li].color);
+      colors[i*3] = c.r; colors[i*3+1] = c.g; colors[i*3+2] = c.b;
+    }
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.attributes.color.needsUpdate = true;
+  // Also update mesh vertices to flatten hidden layers
+  updateMeshVertices(true, true);
+}
+
+// ═══════════════════════════════════════════════════════
+// MATERIAL-BASED PAINTING
+// ═══════════════════════════════════════════════════════
+function initMaterialMap() {
+  if (!materialMap || materialMap.length !== RES * RES) {
+    materialMap = new Uint8Array(RES * RES);
+  } else {
+    materialMap.fill(0);
+  }
+  syncColorDataFromMaterials();
+}
+
+function syncColorDataFromMaterials() {
+  if (!materialMap || !colorData || colorData.length !== RES * RES * 3) {
+    colorData = new Float32Array(RES * RES * 3);
+  }
+  const c = new THREE.Color();
+  for (let i = 0; i < RES * RES; i++) {
+    const matId = materialMap[i];
+    const mat = MATERIALS[matId] || MATERIALS[0];
+    c.set(mat.color);
+    colorData[i*3] = c.r;
+    colorData[i*3+1] = c.g;
+    colorData[i*3+2] = c.b;
+  }
+  // Update mesh colors if in solid mode
+  if (threeReady && terrainMesh && state.viewMode === 'solid') {
+    const geo = terrainMesh.geometry;
+    const curAttr = geo.getAttribute('color');
+    if (curAttr) {
+      for (let i = 0; i < curAttr.count; i++) {
+        const z = Math.floor(i / RES);
+        const x = i % RES;
+        if (z < RES && x < RES) {
+          const idx = (z * RES + x) * 3;
+          curAttr.array[i*3] = colorData[idx];
+          curAttr.array[i*3+1] = colorData[idx+1];
+          curAttr.array[i*3+2] = colorData[idx+2];
+        }
+      }
+      curAttr.needsUpdate = true;
+    }
+  }
+}
+
+function paintMaterialAt(gx, gz, matId) {
+  const size = state.brushSize, flow = state.brushFlow / 100;
+  const radius = size / 2;
+  const ceilRad = Math.ceil(radius);
+  let changed = false;
+  for (let dz = -ceilRad; dz <= ceilRad; dz++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
+    const px = gx+dx, pz = gz+dz;
+    if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
+    const dist = Math.sqrt(dx*dx+dz*dz);
+    if (dist > radius) continue;
+    const f = 1 - dist/radius;
+    if (Math.random() > f * flow) continue; // flow control
+    materialMap[pz*RES+px] = matId;
+    changed = true;
+  }
+  if (changed) syncColorDataFromMaterials();
+}
+
+// Flood-fill: paint the ENTIRE connected component at the clicked cell's height layer
+// with the given material. Only affects cells at the same quantized height level
+// that are 4-directionally connected.
+function floodFillMaterial(gx, gz, matId) {
+  if (!materialMap) return;
+  const N = state.layers;
+  const targetH = baseHeightData[gz * RES + gx];
+  if (targetH <= 0.001) return; // background, nothing to flood
+  
+  const qh = Math.ceil(targetH * N) / N;
+  const visited = new Uint8Array(RES * RES);
+  const queue = [[gx, gz]];
+  visited[gz * RES + gx] = 1;
+  let head = 0;
+  
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]]; // 4-directional
+  
+  while (head < queue.length) {
+    const [cx, cz] = queue[head++];
+    const idx = cz * RES + cx;
+    
+    // Set material for this cell
+    materialMap[idx] = matId;
+    
+    for (const [dx, dz] of dirs) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx < 0 || nx >= RES || nz < 0 || nz >= RES) continue;
+      const nidx = nz * RES + nx;
+      if (visited[nidx]) continue;
+      
+      // Check if neighbor is at the same quantized height
+      const nh = baseHeightData[nidx];
+      if (nh <= 0.001) continue;
+      const nqh = Math.ceil(nh * N) / N;
+      if (nqh !== qh) continue;
+      
+      visited[nidx] = 1;
+      queue.push([nx, nz]);
+    }
+  }
+  
+  syncColorDataFromMaterials();
+  toast('Componente pintado como ' + (MATERIALS[matId]?.name || 'material'));
+}
+
+// ═══════════════════════════════════════════════════════
+// FILL TERRAIN HOLES — fill internal empty cells (height=0)
+// that are surrounded by terrain, making each layer solid.
+// ═══════════════════════════════════════════════════════
+function fillTerrainHoles() {
+  if (!materialMap) initMaterialMap();
+  saveUndoSnapshot();
+  const N = state.layers;
+
+  // Step 1: Flood-fill from ALL grid borders through empty cells
+  // Any empty cell NOT reached is an internal hole (surrounded by terrain)
+  const visited = new Uint8Array(RES * RES);
+  const queue = [];
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+
+  // Seed: all empty cells on the 4 borders of the grid
+  for (let y = 0; y < RES; y++) {
+    for (let x = 0; x < RES; x++) {
+      const isBorder = (y === 0 || y === RES-1 || x === 0 || x === RES-1);
+      if (isBorder && heightData[y * RES + x] <= 0.001 && !visited[y * RES + x]) {
+        visited[y * RES + x] = 1;
+        queue.push([x, y]);
+      }
+    }
+  }
+
+  // BFS through all empty cells reachable from the border
+  let head = 0;
+  while (head < queue.length) {
+    const [cx, cy] = queue[head++];
+    for (const [dx, dy] of dirs) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || nx >= RES || ny < 0 || ny >= RES) continue;
+      const nidx = ny * RES + nx;
+      if (visited[nidx]) continue;
+      // Only flood through empty cells (height=0 or background)
+      if (heightData[nidx] <= 0.001) {
+        visited[nidx] = 1;
+        queue.push([nx, ny]);
+      }
+    }
+  }
+
+  // Step 2: Count internal holes (empty cells NOT visited by border flood)
+  let internalCount = 0;
+  for (let i = 0; i < RES * RES; i++) {
+    if (heightData[i] <= 0.001 && !visited[i]) internalCount++;
+  }
+  if (internalCount === 0) { toast('No se encontraron huecos internos'); return; }
+
+  // Step 3: Find the minimum terrain height to use as fill value
+  // Scan nearby terrain cells around each hole to determine fill height
+  let minH = 1;
+  for (let i = 0; i < RES * RES; i++) {
+    if (heightData[i] > 0.001) minH = Math.min(minH, heightData[i]);
+  }
+  const layerHeight = Math.max(Math.ceil(minH * N) / N, 1 / N);
+
+  // Step 4: Fill all internal holes
+  let filled = 0;
+  for (let i = 0; i < RES * RES; i++) {
+    if (heightData[i] <= 0.001 && !visited[i]) {
+      heightData[i] = layerHeight;
+      filled++;
+    }
+  }
+
+  needsRegen = true;
+  drawCanvas();
+  if (threeReady) rebuildTerrain();
+  toast(filled + ' huecos internos rellenados a nivel capa base');
+}
+
 function rebuildTerrain() {
   if (!threeReady) return;
 
@@ -762,14 +1094,15 @@ function rebuildTerrain() {
   const quantized = new Float32Array(RES*RES);
   for (let i = 0; i < RES*RES; i++) quantized[i] = baseHeightData[i] > 0.001 ? Math.ceil(baseHeightData[i] * N) / N : 0;
 
-  // Initialize colorData if needed
-  if (!colorData || colorData.length !== RES*RES*3) {
-    colorData = new Float32Array(RES*RES*3);
-    const base = new THREE.Color(state.baseColor || '#c4a265');
-    for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
+  // Initialize colorData and materialMap if needed
+  if (!materialMap || materialMap.length !== RES*RES) {
+    initMaterialMap();
+  } else if (!colorData || colorData.length !== RES*RES*3) {
+    syncColorDataFromMaterials();
   }
 
-  const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight;
+  const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight * HEIGHT_SCALE;
+  const mScaleX = state.modelScaleX, mScaleZ = state.modelScaleZ;
   const positions = [], indices = [], colors = [];
 
   const cr = t => {
@@ -788,9 +1121,18 @@ function rebuildTerrain() {
 
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
     const h = quantized[z*RES+x];
-    positions.push((x/(RES-1)-0.5)*scaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ);
+    positions.push((x/(RES-1)-0.5)*scaleX * mScaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ * mScaleZ);
     if (state.viewMode === 'heat') {
       const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
+    } else if (state.viewMode === 'layers') {
+      const v = baseHeightData[z*RES+x];
+      const li = getLayerIndexForHeight(v, state.layers);
+      if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
+        colors.push(0, 0, 0);
+      } else {
+        const col = new THREE.Color(layerConfig[li].color);
+        colors.push(col.r, col.g, col.b);
+      }
     } else {
       const idx = (z*RES+x)*3;
       colors.push(colorData[idx], colorData[idx+1], colorData[idx+2]);
@@ -820,9 +1162,9 @@ function rebuildTerrain() {
   terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
   scene.add(terrainMesh);
   needsRegen = false;
-  loadingOverlay.classList.remove('show');
+  hideLoading();
 
-  // Update ruler position and dimension overlay
+  // Keep ruler with original grid distances (modelScale is visual-only)
   if (rulerGroup) { scene.remove(rulerGroup); rulerGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); }); rulerGroup = null; }
   buildRuler(state.sizeX, state.sizeZ);
   updateDimOverlay();
@@ -830,7 +1172,7 @@ function rebuildTerrain() {
   // Update shadow camera to fit terrain
   const dl = scene.children.find(c => c.isDirectionalLight && c.shadow);
   if (dl) {
-    const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight) * 1.5;
+    const shMax = Math.max(state.sizeX, state.sizeZ, state.maxHeight * HEIGHT_SCALE) * 1.5;
     dl.shadow.camera.left = -shMax; dl.shadow.camera.right = shMax;
     dl.shadow.camera.top = shMax; dl.shadow.camera.bottom = -shMax;
     dl.shadow.camera.far = shMax * 3;
@@ -856,12 +1198,17 @@ function setViewMode(mode) {
   if (mode === 'solid') $('#viewMode3d').classList.add('active3d');
   else if (mode === 'heat') $('#viewModeHeat').classList.add('active3d');
   else if (mode === 'wire') $('#viewModeWire').classList.add('active3d');
-  loadingOverlay.classList.add('show');
+  else if (mode === 'layers') {
+    $('#viewModeLayers').classList.add('active3d');
+    initLayerConfig(state.layers);
+  }
+  setLoading('Cambiando vista...');
   requestAnimationFrame(() => rebuildTerrain());
 }
 $('#viewMode3d').addEventListener('click', () => setViewMode('solid'));
 $('#viewModeHeat').addEventListener('click', () => setViewMode('heat'));
 $('#viewModeWire').addEventListener('click', () => setViewMode('wire'));
+$('#viewModeLayers').addEventListener('click', () => setViewMode('layers'));
 
 // ═══════════════════════════════════════════════════════
 // 3D RAYCAST PAINTING
@@ -870,6 +1217,34 @@ let is3dPainting = false;
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let paint3dBtn = $('#paint3dBtn');
+
+// Undo stack for 3D brush strokes
+const undoStack = [];
+const UNDO_MAX = 30;
+
+function saveUndoSnapshot() {
+  const snap = { heightData: new Float32Array(heightData) };
+  if (colorData) snap.colorData = new Float32Array(colorData);
+  if (materialMap) snap.materialMap = new Uint8Array(materialMap);
+  undoStack.push(snap);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+
+function undoLastPaint() {
+  if (undoStack.length === 0) { toast('No hay acciones para deshacer'); return; }
+  const snap = undoStack.pop();
+  heightData.set(snap.heightData);
+  if (snap.colorData && colorData) colorData.set(snap.colorData);
+  if (snap.materialMap && materialMap) {
+    materialMap.set(snap.materialMap);
+    syncColorDataFromMaterials();
+  }
+  baseHeightData.set(heightData);
+  needsRegen = true;
+  drawCanvas();
+  rebuildTerrain();
+  toast('Deshecho (Ctrl+Z)');
+}
 
 function get3dGridPos(event) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -881,8 +1256,9 @@ function get3dGridPos(event) {
   if (intersects.length === 0) return null;
   const pt = intersects[0].point;
   const sX = state.sizeX, sZ = state.sizeZ;
-  const gx = Math.round(((pt.x / sX) + 0.5) * (RES-1));
-  const gz = Math.round(((pt.z / sZ) + 0.5) * (RES-1));
+  const mSX = state.modelScaleX || 1, mSZ = state.modelScaleZ || 1;
+  const gx = Math.round(((pt.x / (sX * mSX)) + 0.5) * (RES-1));
+  const gz = Math.round(((pt.z / (sZ * mSZ)) + 0.5) * (RES-1));
   if (gx < 0 || gx >= RES || gz < 0 || gz >= RES) return null;
   return {x: gx, z: gz};
 }
@@ -891,20 +1267,9 @@ function paint3dAt(gx, gz) {
   const size = state.brushSize, flow = state.brushFlow / 100;
   const radius = size / 2;
   const ceilRad = Math.ceil(radius);
-  // Pre-compute max height within brush area for smooth tool
-  let maxH = 0;
-  if (state.tool === 'smooth') {
-    for (let dz = -ceilRad; dz <= ceilRad; dz++) {
-      for (let dx = -ceilRad; dx <= ceilRad; dx++) {
-        const nx = gx+dx, nz = gz+dz;
-        if (nx>=0 && nx<RES && nz>=0 && nz<RES) {
-          if (Math.sqrt(dx*dx+dz*dz) <= radius) {
-            maxH = Math.max(maxH, heightData[nz*RES+nx]);
-          }
-        }
-      }
-    }
-  }
+  // Safety guard: floodfill is handled separately in mousedown, never via brush
+  if (state.tool === 'floodfill') return;
+  // Safety guard: color has its own handler, never via brush elevation
   for (let dz = -ceilRad; dz <= ceilRad; dz++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = gx+dx, pz = gz+dz;
     if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
@@ -913,10 +1278,16 @@ function paint3dAt(gx, gz) {
     const f = 1 - dist/radius;
     const cur = heightData[pz*RES+px];
     if (state.tool === 'smooth') {
-      // Raise terrain toward the highest layer within the brush area
-      const rate = Math.abs(state.brushStrength);
-      const amount = f * flow * (0.05 + rate * 0.20);
-      if (cur < maxH) heightData[pz*RES+px] = Math.min(maxH, cur + amount);
+      // Flatten toward reference height (captured on mousedown)
+      if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
+        const rate = Math.abs(state.brushStrength);
+        const amount = f * flow * (0.05 + rate * 0.20);
+        if (cur < smoothRefHeight) {
+          heightData[pz*RES+px] = Math.min(smoothRefHeight, cur + amount);
+        } else {
+          heightData[pz*RES+px] = Math.max(smoothRefHeight, cur - amount);
+        }
+      }
     }
     else if (state.tool === 'color') {
       const col = new THREE.Color(state.paintColor || '#c4a265');
@@ -931,6 +1302,12 @@ function paint3dAt(gx, gz) {
       const dir = state.tool === 'add' ? 1 : -1;
       const rate = Math.abs(state.brushStrength);
       const amount = f * flow * (0.05 + rate * 0.20);
+      // In layers view mode, only modify cells in VISIBLE layers
+      if (state.viewMode === 'layers') {
+        const curLayer = Math.min(Math.ceil(cur * state.layers), state.layers);
+        const cfg = layerConfig[curLayer];
+        if (cur > 0.001 && cfg && cfg.visible === false) continue; // skip hidden layers
+      }
       heightData[pz*RES+px] = Math.max(0, Math.min(1, cur + dir * amount));
     }
   }
@@ -939,7 +1316,7 @@ function paint3dAt(gx, gz) {
 
 function updateMeshVertices(smooth, updateNormals) {
   if (!terrainMesh) return;
-  const hScale = state.maxHeight, N = state.layers;
+  const hScale = state.maxHeight * HEIGHT_SCALE, N = state.layers;
   let src = heightData;
   if (smooth && state.smoothing > 0) {
     src = new Float32Array(heightData);
@@ -967,7 +1344,15 @@ function updateMeshVertices(smooth, updateNormals) {
   const posAttr = terrainMesh.geometry.getAttribute('position');
   const arr = posAttr.array;
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const v = baseHeightData[z*RES+x];
+    const idx = z*RES+x;
+    let v = baseHeightData[idx];
+    // If in layers view mode, flatten hidden layers so they disappear
+    if (state.viewMode === 'layers' && v > 0.001) {
+      const li = Math.min(Math.ceil(v * N), N);
+      if (layerConfig[li] && layerConfig[li].visible === false) {
+        v = 0; // flatten to background
+      }
+    }
     const h = v > 0.001 ? Math.ceil(v * N) / N : 0;
     arr[(z*RES+x)*3+1] = h * hScale;
   }
@@ -1002,6 +1387,23 @@ function setup3dPaintEvents() {
     is3dPainting = true;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
+    // Save undo snapshot BEFORE painting
+    saveUndoSnapshot();
+    // Capture reference height for smooth flatten tool
+    if (state.tool === 'smooth') {
+      smoothRefHeight = heightData[p.z*RES+p.x];
+    }
+    // If flood-fill tool is active, flood-fill the connected component
+    if (state.tool === 'floodfill') {
+      if (activeMaterialId >= 0) {
+        floodFillMaterial(p.x, p.z, activeMaterialId);
+      } else {
+        toast('Seleccioná un material (Tierra/Agua) primero');
+      }
+      is3dPainting = false;
+      controls.enabled = true;
+      return;
+    }
     // Paint first frame (animate loop handles subsequent frames)
     paint3dAt(p.x, p.z);
     if (state.tool === 'color') {
@@ -1053,7 +1455,8 @@ function setup3dPaintEvents() {
     const hits = raycaster.intersectObject(terrainMesh);
     if (hits.length > 0) {
       const pt = hits[0].point;
-      const ringScale = (state.sizeX + state.sizeZ) / 2;
+      const mRing = ((state.modelScaleX || 1) + (state.modelScaleZ || 1)) / 2;
+      const ringScale = (state.sizeX + state.sizeZ) / 2 * mRing;
       const r = (state.brushSize / RES) * ringScale * 0.5;
       brushRing.position.set(pt.x, pt.y + 0.02, pt.z);
       brushRing.scale.set(r/0.2, r/0.2, 1);
@@ -1062,6 +1465,13 @@ function setup3dPaintEvents() {
       brushRing.visible = false;
     }
   }
+  // Ctrl+Z undo for 3D brush strokes
+  window.addEventListener('keydown', function undoKeyHandler(e) {
+    if (e.ctrlKey && e.key === 'z') {
+      e.preventDefault();
+      undoLastPaint();
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1069,7 +1479,7 @@ function setup3dPaintEvents() {
 // ═══════════════════════════════════════════════════════
 function generateLayerOutlineLines() {
   const N = state.layers;
-  const hScale = state.maxHeight;
+  const hScale = state.maxHeight * HEIGHT_SCALE;
   const scaleX = state.sizeX;
   const scaleZ = state.sizeZ;
   const pts = [];
@@ -1132,31 +1542,74 @@ $('#exportStl').addEventListener('click', () => {
 $('#exportSvg').addEventListener('click', () => {
   if (!terrainMesh) { toast('Primero generá el terreno'); return; }
   const N = state.layers, W=800, H=800;
-  const parts = [];
-  for (let l=1; l<=N; l++) {
-    const th = l/N; const segs = [];
-    for (let z=0;z<RES-1;z++) for (let x=0;x<RES-1;x++) {
-      const v00=baseHeightData[z*RES+x], v10=baseHeightData[z*RES+(x+1)], v01=baseHeightData[(z+1)*RES+x], v11=baseHeightData[(z+1)*RES+(x+1)];
-      const bits=(v00>=th?8:0)|(v10>=th?4:0)|(v01>=th?2:0)|(v11>=th?1:0);
-      if (bits===0||bits===15) continue;
-      const xf=g=>((g/(RES-1))-0.5)*W*0.85+W/2, yf=g=>((g/(RES-1))-0.5)*H*0.85+H/2;
-      const cx=xf(x), nx=xf(x+1), cy=yf(z), ny=yf(z+1);
-      const ip=(a,b,t)=>a+(b-a)*t;
-      const ei=e=>{switch(e){case 0:return[ip(cx,nx,(th-v00)/(v10-v00)),cy];case 1:return[nx,ip(cy,ny,(th-v10)/(v11-v10))];case 2:return[ip(cx,nx,(th-v01)/(v11-v01)),ny];case 3:return[cx,ip(cy,ny,(th-v00)/(v01-v00))];default:return[0,0];}};
-      const ec={1:[[3,2]],2:[[1,0]],3:[[3,1]],4:[[0,2]],5:[[0,2],[3,1]],6:[[0,0]],7:[[1,2]],8:[[0,1]],9:[[0,1]],10:[[1,3],[0,2]],11:[[1,2]],12:[[3,0]],13:[[1,3]],14:[[3,0]]};
-      const es=ec[bits]; if (!es) continue;
-      for (const [e1,e2] of es) { const [x1,y1]=ei(e1),[x2,y2]=ei(e2); segs.push({x1,y1,x2,y2}); }
+  const allParts = [];
+
+  // Marching squares for one material's height data
+  function generateMaterialSvgParts(matId, matName, matColor, labelPrefix) {
+    const parts = [];
+    // Create filtered height: only cells with this material keep height, others = 0
+    const filtered = new Float32Array(RES * RES);
+    for (let i = 0; i < RES * RES; i++) {
+      if (materialMap && materialMap[i] === matId) {
+        filtered[i] = baseHeightData[i];
+      } else {
+        filtered[i] = 0;
+      }
     }
-    if (segs.length===0) continue;
-    let d = ''; for (const s of segs) d += `M${s.x1.toFixed(1)},${s.y1.toFixed(1)}L${s.x2.toFixed(1)},${s.y2.toFixed(1)}`;
-    const cl = `hsl(${200-(l/N)*200},70%,50%)`;
-    parts.push(`<path d="${d}" fill="none" stroke="${cl}" stroke-width="1.5" opacity="0.7"/><text x="20" y="${30+l*20}" font-size="10" fill="${cl}" font-family="sans-serif">Capa ${l}</text>`);
+
+    for (let l=1; l<=N; l++) {
+      // Capa 1: contorno exterior, capas 2+: borde inferior
+      const th = l === 1 ? 0.001 : (l - 1) / N;
+      const segs = [];
+      for (let z=0;z<RES-1;z++) for (let x=0;x<RES-1;x++) {
+        const v00=filtered[z*RES+x], v10=filtered[z*RES+(x+1)], v01=filtered[(z+1)*RES+x], v11=filtered[(z+1)*RES+(x+1)];
+        const bits=(v00>=th?8:0)|(v10>=th?4:0)|(v01>=th?2:0)|(v11>=th?1:0);
+        if (bits===0||bits===15) continue;
+        const xf=g=>((g/(RES-1))-0.5)*W*0.85+W/2, yf=g=>((g/(RES-1))-0.5)*H*0.85+H/2;
+        const cx=xf(x), nx=xf(x+1), cy=yf(z), ny=yf(z+1);
+        const ip=(a,b,t)=>a+(b-a)*t;
+        const ei=e=>{switch(e){case 0:return[ip(cx,nx,(th-v00)/(v10-v00)),cy];case 1:return[nx,ip(cy,ny,(th-v10)/(v11-v10))];case 2:return[ip(cx,nx,(th-v01)/(v11-v01)),ny];case 3:return[cx,ip(cy,ny,(th-v00)/(v01-v00))];default:return[0,0];}};
+        const ec={1:[[3,2]],2:[[1,0]],3:[[3,1]],4:[[0,2]],5:[[0,2],[3,1]],6:[[0,0]],7:[[1,2]],8:[[0,1]],9:[[0,1]],10:[[1,3],[0,2]],11:[[1,2]],12:[[3,0]],13:[[1,3]],14:[[3,0]]};
+        const es=ec[bits]; if (!es) continue;
+        for (const [e1,e2] of es) { const [x1,y1]=ei(e1),[x2,y2]=ei(e2); segs.push({x1,y1,x2,y2}); }
+      }
+      if (segs.length===0) continue;
+      let d = ''; for (const s of segs) d += `M${s.x1.toFixed(1)},${s.y1.toFixed(1)}L${s.x2.toFixed(1)},${s.y2.toFixed(1)}`;
+      // Color: vary lightness based on layer within the material's hue
+      // Extract hue from the material color
+      const tmpC = new THREE.Color(matColor);
+      const hsl = {};
+      tmpC.getHSL(hsl);
+      const hueDeg = Math.round(hsl.h * 360);
+      const lightness = 25 + (l / N) * 45;
+      const cl = `hsl(${hueDeg},65%,${lightness}%)`;
+      const layerName = labelPrefix + ' ' + l;
+      parts.push(`<path d="${d}" fill="none" stroke="${cl}" stroke-width="1.5" opacity="0.7"/><text x="20" y="${30+l*20}" font-size="10" fill="${cl}" font-family="sans-serif">${layerName}</text>`);
+    }
+    return parts;
   }
-  if (parts.length===0) { toast('No hay suficientes capas'); return; }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${parts.join('\\n')}</svg>`;
+
+  // Generate tierra layers (material 0)
+  const tierraColor = (MATERIALS[0] && MATERIALS[0].color) || '#c4a265';
+  const tierraParts = generateMaterialSvgParts(0, 'Tierra', tierraColor, 'Capa Tierra');
+  allParts.push(...tierraParts);
+
+  // Generate agua layers (material 1) if present
+  if (materialMap && materialMap.some(v => v === 1)) {
+    const aguaColor = (MATERIALS[1] && MATERIALS[1].color) || '#4a9eff';
+    const aguaParts = generateMaterialSvgParts(1, 'Agua', aguaColor, 'Capa Agua');
+    // Offset agua legend below tierra legend
+    for (let i = 0; i < aguaParts.length; i++) {
+      aguaParts[i] = aguaParts[i].replace(/y="(\d+)"/, (m, y) => 'y="' + (parseInt(y) + N * 20 + 10) + '"');
+    }
+    allParts.push(...aguaParts);
+  }
+
+  if (allParts.length===0) { toast('No hay suficientes capas'); return; }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${allParts.join('\\n')}</svg>`;
   const b = new Blob([svg], {type:'image/svg+xml'}); const u=URL.createObjectURL(b);
-  const a = document.createElement('a'); a.href=u; a.download=`terrain_layers_${N}.svg`; a.click(); URL.revokeObjectURL(u);
-  toast(`SVG con ${N} capas exportado`);
+  const a = document.createElement('a'); a.href=u; a.download=`terrain_capas.svg`; a.click(); URL.revokeObjectURL(u);
+  toast(`SVG con ${allParts.length} capas exportado`);
 });
 
 // Build a group with terrain + layer outline lines for GLB export
@@ -1183,7 +1636,7 @@ function buildGlbExportGroup() {
 // Generic GLB export function — calls callback with ArrayBuffer
 function exportGlbThen(callback) {
   if (!terrainMesh) { toast('Primero generá el terreno'); return; }
-  loadingOverlay.classList.add('show');
+  setLoading('Exportando GLB...');
 
   // Ensure baseHeightData is current for line generation
   if (!is3dPainting) {
@@ -1200,9 +1653,9 @@ function exportGlbThen(callback) {
       if (c.geometry && c !== terrainMesh) c.geometry.dispose();
       if (c.material && c !== terrainMesh?.material) c.material.dispose();
     });
-    loadingOverlay.classList.remove('show');
+    hideLoading();
     callback(glb);
-  }, e => { loadingOverlay.classList.remove('show'); toast('Error exportando GLB'); }, opt);
+  }, e => { hideLoading(); toast('Error exportando GLB'); }, opt);
 }
 
 // Export GLB — download as file
@@ -1217,20 +1670,147 @@ $('#exportGlb').addEventListener('click', () => {
 
 // View GLB — open in glbviewer.html via postMessage
 let pendingGlbData = null;
+let pendingVectorData = null;
 
 window.addEventListener('message', event => {
   if (event.data === 'glb_viewer_ready' && pendingGlbData) {
     event.source.postMessage({ type: 'glb_data', data: pendingGlbData }, event.origin);
     pendingGlbData = null;
   }
+  if (event.data === 'vector_viewer_ready' && pendingVectorData) {
+    event.source.postMessage(pendingVectorData, event.origin);
+    pendingVectorData = null;
+  }
+  if (event.data === 'vector_viewer_recalculate') {
+    sendVectorDataTo(event.source, event.origin);
+  }
 });
+
+function sendVectorDataTo(source, origin) {
+  source.postMessage({
+    type: 'vector_data',
+    heightData: Array.from(heightData),
+    resolution: RES,
+    layers: state.layers,
+    sizeX: state.sizeX,
+    sizeZ: state.sizeZ,
+    modelScaleX: state.modelScaleX,
+    modelScaleZ: state.modelScaleZ,
+    maxHeight: state.maxHeight,
+    smoothing: state.smoothing,
+    brillo: state.brillo,
+    contraste: state.contraste,
+    layerConfig: layerConfig,
+    materialMap: materialMap ? Array.from(materialMap) : null,
+    materials: MATERIALS,
+    version: 3
+  }, origin);
+  toast('Datos enviados al visor de vectores');
+}
 
 $('#viewGlbBtn').addEventListener('click', () => {
   exportGlbThen(glb => {
     pendingGlbData = glb;
     toast('Abriendo visor GLB...');
-    window.open('glbviewer.html', '_blank');
+    // Pass current preset/terrain info so glbviewer URL reflects the model
+    let viewerUrl = 'glbviewer.html';
+    if (window._activePresetId) {
+      viewerUrl += '?preset=' + encodeURIComponent(window._activePresetId);
+      // Also save the GLB to the server so the viewer can load it directly
+      if (IS_LOCAL) {
+        fetch(API_BASE + '/api/terrain/' + encodeURIComponent(window._activePresetId) + '/glb', {
+          method: 'POST',
+          body: glb,
+          headers: { 'Content-Type': 'application/octet-stream' }
+        }).catch(err => console.warn('GLB upload failed:', err));
+      }
+    } else if (state.activeTerrain !== 'default-hill') {
+      viewerUrl += '?terrain=' + encodeURIComponent(state.activeTerrain);
+    }
+    window.open(viewerUrl, '_blank');
   });
+});
+
+// Export Vector — open vectorviewer.html via postMessage
+$('#exportVectorBtn').addEventListener('click', () => {
+  if (!terrainMesh) { toast('Primero generá el terreno'); return; }
+  // Send raw heightData — the vector viewer will apply smoothing/brillo itself
+  pendingVectorData = {
+    type: 'vector_data',
+    heightData: Array.from(heightData),
+    resolution: RES,
+    layers: state.layers,
+    sizeX: state.sizeX,
+    sizeZ: state.sizeZ,
+    modelScaleX: state.modelScaleX,
+    modelScaleZ: state.modelScaleZ,
+    maxHeight: state.maxHeight,
+    smoothing: state.smoothing,
+    brillo: state.brillo,
+    contraste: state.contraste,
+    version: 2
+  };
+  toast('Abriendo visor de vectores...');
+  // Pass current preset/terrain info so vectorviewer URL reflects the model
+  let viewerUrl = 'vectorviewer.html';
+  if (window._activePresetId) {
+    viewerUrl += '?preset=' + encodeURIComponent(window._activePresetId);
+  } else if (state.activeTerrain && state.activeTerrain !== 'default-hill') {
+    viewerUrl += '?terrain=' + encodeURIComponent(state.activeTerrain);
+  }
+  window.open(viewerUrl, '_blank');
+});
+
+// ═══════════════════════════════════════════════════════
+// ADD NUMBER INPUTS TO ALL RANGE SLIDERS
+// ═══════════════════════════════════════════════════════
+document.querySelectorAll('.panel-left input[type="range"]').forEach(range => {
+  const numInput = document.createElement('input');
+  numInput.type = 'number';
+  numInput.className = 'num-input';
+  range.after(numInput);
+  // Find the display span for this slider
+  const valSpan = range.closest('.control-group')?.querySelector('.value');
+  // Detect display scaling (e.g. maxHeight: slider=2.8, span="11.2", scale=4)
+  const rawNum = parseFloat(range.value);
+  const dispNum = valSpan ? parseFloat(valSpan.textContent) : rawNum;
+  const scaleFactor = (!isNaN(rawNum) && !isNaN(dispNum) && rawNum !== 0) ? dispNum / rawNum : 1;
+  numInput.dataset.scale = scaleFactor.toFixed(6);
+  // Set number input min/max/step to DISPLAY range, not slider range
+  const s = parseFloat(range.step) || 1;
+  numInput.step = (s * scaleFactor).toFixed(6);
+  numInput.min = (parseFloat(range.min) * scaleFactor).toFixed(6);
+  numInput.max = (parseFloat(range.max) * scaleFactor).toFixed(6);
+  // Range -> Number: read from display span (handles scaled values like maxHeight)
+  const syncNumFromRange = () => {
+    numInput.value = valSpan ? valSpan.textContent : range.value;
+  };
+  range.addEventListener('input', syncNumFromRange);
+  // Number -> Range: convert from display value to internal slider value using scale factor
+  const syncRangeFromNum = () => {
+    let v = parseFloat(numInput.value);
+    if (isNaN(v)) { syncNumFromRange(); return; }
+    // Convert from display value to internal slider value
+    const scale = parseFloat(numInput.dataset.scale) || 1;
+    v = v / scale;
+    // Clamp to slider range
+    v = Math.max(parseFloat(range.min), Math.min(parseFloat(range.max), v));
+    // Snap to step with epsilon for floating point safety
+    const step = parseFloat(range.step) || 1;
+    const eps = 1e-10;
+    v = Math.round(v / step + eps) * step;
+    v = parseFloat(v.toFixed(6));
+    range.value = v;
+    // Fire input event — existing handler updates state + display span
+    range.dispatchEvent(new Event('input', { bubbles: true }));
+    // Read back from display span so num shows formatted value
+    if (valSpan) numInput.value = valSpan.textContent;
+  };
+  numInput.addEventListener('change', syncRangeFromNum);
+  numInput.addEventListener('blur', syncRangeFromNum);
+  numInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); syncRangeFromNum(); } });
+  // Initial sync
+  syncNumFromRange();
 });
 
 // ═══════════════════════════════════════════════════════
@@ -1238,9 +1818,30 @@ $('#viewGlbBtn').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════
 document.querySelectorAll('.paint-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (!btn.dataset.tool) return; // skip buttons without data-tool (e.g. material-btn without paint-btn class)
     document.querySelectorAll('.paint-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.tool = btn.dataset.tool;
+    updatePaintModeDisplay();
+  });
+});
+
+// Material selector buttons (Tierra/Agua)
+// Select which material the flood-fill tool uses
+document.querySelectorAll('.material-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const matId = parseInt(btn.dataset.material);
+    if (activeMaterialId === matId) {
+      // Toggle off
+      activeMaterialId = -1;
+      btn.classList.remove('active');
+      toast('Material desactivado');
+    } else {
+      activeMaterialId = matId;
+      document.querySelectorAll('.material-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      toast('Material: ' + (MATERIALS[matId]?.name || 'Material'));
+    }
     updatePaintModeDisplay();
   });
 });
@@ -1253,6 +1854,10 @@ function updatePaintModeDisplay() {
   else if (state.tool === 'sub') label.textContent = '· ⬇ Bajar';
   else if (state.tool === 'smooth') label.textContent = '· 🌊 Suavizar';
   else if (state.tool === 'color') label.textContent = '· 🎨 Color';
+  else if (state.tool === 'floodfill') {
+    const matName = activeMaterialId >= 0 ? (MATERIALS[activeMaterialId]?.name || '') : '';
+    label.textContent = '· 🔫 Rellenar' + (matName ? ' (' + matName + ')' : ' (sin material)');
+  }
 }
 
 const $layers = $('#layers'), $maxH = $('#maxHeight'), $smooth = $('#smoothing');
@@ -1261,10 +1866,13 @@ const $brushSize = $('#brushSize'), $brushFlow = $('#brushFlow'), $brushStrength
 const $resolution = $('#resolution');
 const $sizeX = $('#sizeX'), $sizeZ = $('#sizeZ');
 
-$layers.addEventListener('input', () => { state.layers = parseInt($layers.value); $('#layersVal').textContent = state.layers; scheduleRebuild(); });
-$maxH.addEventListener('input', () => { state.maxHeight = parseFloat($maxH.value); $('#heightVal').textContent = state.maxHeight.toFixed(1); scheduleRebuild(); });
+$layers.addEventListener('input', () => { state.layers = parseInt($layers.value); $('#layersVal').textContent = state.layers; if (state.viewMode === 'layers') initLayerConfig(state.layers); scheduleRebuild(); });
+$maxH.addEventListener('input', () => { state.maxHeight = parseFloat($maxH.value); $('#heightVal').textContent = (state.maxHeight * HEIGHT_SCALE).toFixed(1); scheduleRebuild(); });
 $sizeX.addEventListener('input', () => { state.sizeX = parseFloat($sizeX.value); $('#sizeXVal').textContent = state.sizeX.toFixed(1); scheduleRebuild(); });
 $sizeZ.addEventListener('input', () => { state.sizeZ = parseFloat($sizeZ.value); $('#sizeZVal').textContent = state.sizeZ.toFixed(1); scheduleRebuild(); });
+const $modelScaleX = $('#modelScaleX'), $modelScaleZ = $('#modelScaleZ');
+$modelScaleX.addEventListener('input', () => { state.modelScaleX = parseFloat($modelScaleX.value); $('#modelScaleXVal').textContent = state.modelScaleX.toFixed(2); scheduleRebuild(); });
+$modelScaleZ.addEventListener('input', () => { state.modelScaleZ = parseFloat($modelScaleZ.value); $('#modelScaleZVal').textContent = state.modelScaleZ.toFixed(2); scheduleRebuild(); });
 $smooth.addEventListener('input', () => { state.smoothing = parseInt($smooth.value); $('#smoothVal').textContent = state.smoothing; scheduleRebuild(); });
 $brillo.addEventListener('input', () => { state.brillo = parseFloat($brillo.value); $('#brilloVal').textContent = state.brillo.toFixed(2); scheduleRebuild(); });
 $constraste.addEventListener('input', () => { state.contraste = parseFloat($constraste.value); $('#contrasteVal').textContent = state.contraste.toFixed(2); scheduleRebuild(); });
@@ -1272,10 +1880,10 @@ $constraste.addEventListener('input', () => { state.contraste = parseFloat($cons
 $resolution.addEventListener('input', () => {
   state.resolution = parseInt($resolution.value);
   $('#resolutionVal').textContent = state.resolution;
-  loadingOverlay.classList.add('show');
+  setLoading('Redimensionando...');
   reallocateData(state.resolution);
   drawCanvas();
-  if (threeReady) requestAnimationFrame(() => { rebuildTerrain(); loadingOverlay.classList.remove('show'); });
+  if (threeReady) requestAnimationFrame(() => { rebuildTerrain(); hideLoading(); });
 });
 
 $brushSize.addEventListener('input', () => { state.brushSize = parseInt($brushSize.value); $('#brushSizeVal').textContent = state.brushSize; });
@@ -1291,13 +1899,18 @@ const $baseColor = $('#baseColorPicker');
 const $paintColor = $('#paintColorPicker');
 $baseColor.addEventListener('input', () => {
   state.baseColor = $baseColor.value;
-  // Re-init colorData with new base color
-  const base = new THREE.Color(state.baseColor);
-  for (let i = 0; i < RES*RES; i++) { colorData[i*3]=base.r; colorData[i*3+1]=base.g; colorData[i*3+2]=base.b; }
-  scheduleRebuild();
+  // Update Tierra material color
+  MATERIALS[0].color = $baseColor.value;
+  if (materialMap) syncColorDataFromMaterials();
+  else scheduleRebuild();
 });
 $paintColor.addEventListener('input', () => {
   state.paintColor = $paintColor.value;
+});
+const $waterColor = $('#waterColorPicker');
+$waterColor.addEventListener('input', () => {
+  MATERIALS[1].color = $waterColor.value;
+  if (materialMap) syncColorDataFromMaterials();
 });
 
 // Update mesh vertex colors after color painting (fast path)
@@ -1315,11 +1928,12 @@ function updateMeshColors() {
   colorAttr.needsUpdate = true;
 }
 
-$('#applyBtn').addEventListener('click', () => { loadingOverlay.classList.add('show'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
+$('#applyBtn').addEventListener('click', () => { setLoading('Aplicando cambios...'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
 $('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
+$('#fillHolesBtn').addEventListener('click', () => fillTerrainHoles());
 
 $('#refreshLightBtn').addEventListener('click', () => {
-  loadingOverlay.classList.add('show');
+  setLoading('Actualizando luz...');
   requestAnimationFrame(() => { rebuildTerrain(); toast('Iluminación actualizada'); });
 });
 
@@ -1328,10 +1942,11 @@ $('#refreshLightBtn').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════
 $('#exportTerrainBtn').addEventListener('click', () => {
   const data = {
-    version: 2,
+    version: 3,
     params: getStateSnapshot(),
     heightData: Array.from(heightData),
     colorData: colorData ? Array.from(colorData) : null,
+    materialMap: materialMap ? Array.from(materialMap) : null,
     resolution: RES,
   };
   const json = JSON.stringify(data);
@@ -1351,14 +1966,14 @@ $('#importTerrainBtn').addEventListener('click', () => {
   input.accept = '.json';
   input.addEventListener('change', () => {
     if (!input.files[0]) return;
-    loadingOverlay.classList.add('show');
+    setLoading('Importando terreno...');
     const reader = new FileReader();
     reader.onload = e => {
       try {
         const data = JSON.parse(e.target.result);
         if (!data.heightData || !data.resolution) {
           toast('Archivo JSON inválido: falta heightData o resolution');
-          loadingOverlay.classList.remove('show');
+          hideLoading();
           return;
         }
         // Import from version 1 (0..5 brushStrength) or version 2 (0..1)
@@ -1371,14 +1986,25 @@ $('#importTerrainBtn').addEventListener('click', () => {
         if (data.resolution !== RES) {
           reallocateData(data.resolution);
         }
+        // Force sync state.resolution with RES
+        state.resolution = RES;
+        $('#resolution').value = RES;
+        $('#resolutionVal').textContent = RES;
         heightData = new Float32Array(data.heightData);
         baseHeightData.set(heightData);
         if (data.colorData && data.colorData.length === RES*RES*3) {
           colorData = new Float32Array(data.colorData);
         }
+        if (data.materialMap && data.materialMap.length === RES*RES) {
+          materialMap = new Uint8Array(data.materialMap);
+        }
         if (data.params) {
           if (brushStrength !== undefined) data.params.brushStrength = brushStrength;
+          // Apply params but skip resolution (already synced)
+          const oldRes = data.params.resolution;
+          data.params.resolution = RES; // prevent reallocateData from being called again
           applyStateSnapshot(data.params);
+          data.params.resolution = oldRes; // restore for posterity
         }
         needsRegen = true;
         drawCanvas();
@@ -1391,12 +2017,12 @@ $('#importTerrainBtn').addEventListener('click', () => {
               updateMeshColors();
             }
           }
-          loadingOverlay.classList.remove('show');
+          hideLoading();
           toast('Terreno importado');
         });
       } catch (err) {
         toast('Error al leer el archivo: ' + err.message);
-        loadingOverlay.classList.remove('show');
+        hideLoading();
       }
     };
     reader.readAsText(input.files[0]);
@@ -1407,21 +2033,25 @@ $('#importTerrainBtn').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════
 // PRESETS: SAVE / LOAD via API
 // ═══════════════════════════════════════════════════════
-// Cambiá API_BASE a la URL del VPS cuando deployes el frontend standalone
-const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
-  ? window.location.origin
-  : 'https://vps-4455523-x.dattaweb.com/3dlayerterraingenerator';
+// API_BASE: mismo origen (relativo) para evitar CORS
+// Los presets se cargan como archivos estaticos (/uploads/ y /presets-list.json)
+const IS_LOCAL = window.location.protocol === 'file:' || ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+const BASE_PATH = IS_LOCAL ? '' : '/3dlayerterraingenerator';
+const API_BASE = window.location.origin + BASE_PATH;
 
-const $presetName = $('#presetName');
-const $presetGrid = $('#presetGrid');
-const $savePresetBtn = $('#savePresetBtn');
+const $presetName = $('#rightPresetName');
+const $presetGrid = $('#rightPresetGrid');
+const $savePresetBtn = $('#rightSavePresetBtn');
 
 function getStateSnapshot() {
   return {
+    _heightScale: HEIGHT_SCALE,
     layers: state.layers,
     maxHeight: state.maxHeight,
     sizeX: state.sizeX,
     sizeZ: state.sizeZ,
+    modelScaleX: state.modelScaleX,
+    modelScaleZ: state.modelScaleZ,
     smoothing: state.smoothing,
     brillo: state.brillo,
     contraste: state.contraste,
@@ -1437,15 +2067,31 @@ function getStateSnapshot() {
     paintColor: state.paintColor,
     paintAlpha: state.paintAlpha,
     showBase: state.showBase,
+    layerConfig: layerConfig,
+    materialColors: MATERIALS.map(m => m.color),
   };
 }
 
 function applyStateSnapshot(params) {
   if (!params) return;
   if (params.layers !== undefined) { state.layers = params.layers; $('#layers').value = params.layers; $('#layersVal').textContent = params.layers; }
-  if (params.maxHeight !== undefined) { state.maxHeight = params.maxHeight; $('#maxHeight').value = params.maxHeight; $('#heightVal').textContent = params.maxHeight.toFixed(1); }
+  if (params.maxHeight !== undefined) {
+    let v = params.maxHeight;
+    // Rescale old presets (pre-HEIGHT_SCALE, v1 format) — old max=50 → new max=20
+    // Rescale old presets: with _heightScale=2.5 → resize to new scale
+    if (params._heightScale && params._heightScale !== HEIGHT_SCALE) {
+      v = v * (params._heightScale / HEIGHT_SCALE);
+    } else if (!params._heightScale && v > 12) {
+      v = v / HEIGHT_SCALE;
+    }
+    state.maxHeight = Math.min(12, Math.max(0.1, v));
+    $('#maxHeight').value = state.maxHeight;
+    $('#heightVal').textContent = (state.maxHeight * HEIGHT_SCALE).toFixed(1);
+  }
   if (params.sizeX !== undefined) { state.sizeX = params.sizeX; $('#sizeX').value = params.sizeX; $('#sizeXVal').textContent = params.sizeX.toFixed(1); }
   if (params.sizeZ !== undefined) { state.sizeZ = params.sizeZ; $('#sizeZ').value = params.sizeZ; $('#sizeZVal').textContent = params.sizeZ.toFixed(1); }
+  if (params.modelScaleX !== undefined) { state.modelScaleX = params.modelScaleX; $('#modelScaleX').value = params.modelScaleX; $('#modelScaleXVal').textContent = params.modelScaleX.toFixed(2); }
+  if (params.modelScaleZ !== undefined) { state.modelScaleZ = params.modelScaleZ; $('#modelScaleZ').value = params.modelScaleZ; $('#modelScaleZVal').textContent = params.modelScaleZ.toFixed(2); }
   if (params.smoothing !== undefined) { state.smoothing = params.smoothing; $('#smoothing').value = params.smoothing; $('#smoothVal').textContent = params.smoothing; }
   if (params.brillo !== undefined) { state.brillo = params.brillo; $('#brillo').value = params.brillo; $('#brilloVal').textContent = params.brillo.toFixed(2); }
   if (params.contraste !== undefined) { state.contraste = params.contraste; $('#contraste').value = params.contraste; $('#contrasteVal').textContent = params.contraste.toFixed(2); }
@@ -1463,18 +2109,57 @@ function applyStateSnapshot(params) {
   if (params.paintColor !== undefined) { state.paintColor = params.paintColor; $('#paintColorPicker').value = params.paintColor; }
   if (params.paintAlpha !== undefined) { state.paintAlpha = params.paintAlpha; $('#paintAlpha').value = params.paintAlpha; $('#paintAlphaVal').textContent = params.paintAlpha.toFixed(2); }
   if (params.showBase !== undefined) { state.showBase = params.showBase; var sb = $('#showBaseBtn'); if(sb) sb.innerHTML = state.showBase ? '🧱 Base visible' : '🧱 Base oculta'; }
+  // Restore layer config if present
+  if (params.layerConfig) {
+    layerConfig = {};
+    for (const [k, v] of Object.entries(params.layerConfig)) {
+      layerConfig[k] = { ...v };
+    }
+    buildLayerConfigUI();
+  }
+  // Restore material colors if present
+  if (params.materialColors) {
+    params.materialColors.forEach((color, i) => {
+      if (MATERIALS[i]) MATERIALS[i].color = color;
+    });
+    $('#baseColorPicker').value = MATERIALS[0]?.color || '#c4a265';
+    const wc = document.getElementById('waterColorPicker');
+    if (wc) wc.value = MATERIALS[1]?.color || '#4a9eff';
+    if (materialMap) syncColorDataFromMaterials();
+  }
+  // Sync number inputs after applying state
+  document.querySelectorAll('.num-input').forEach(inp => {
+    const range = inp.previousElementSibling;
+    if (range && range.type === 'range') {
+      const span = range.closest('.control-group')?.querySelector('.value');
+      inp.value = span ? span.textContent : range.value;
+    }
+  });
+}
+
+// Compacta un Float32Array a JS Numbers con precisión controlada
+// para evitar que JSON.stringify expanda los floats (0.1 → 0.10000000149011612)
+function compactFloats(arr, decimals) {
+  const factor = Math.pow(10, decimals);
+  const result = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    result[i] = Math.round(arr[i] * factor) / factor;
+  }
+  return result;
 }
 
 async function savePreset() {
-  if (!$presetName) { toast('Panel izquierdo no disponible'); return; }
+  if (!$presetName) { toast('Campo de nombre no disponible'); return; }
+  if (!IS_LOCAL) { toast('Guardar preset solo disponible en modo local (localhost)'); return; }
   const name = $presetName.value.trim();
   if (!name) { toast('Escribí un nombre para el preset'); if ($presetName) $presetName.focus(); return; }
   const params = getStateSnapshot();
   const payload = {
     name: name,
     params: params,
-    heightData: Array.from(heightData),
-    colorData: colorData ? Array.from(colorData) : null,
+    heightData: compactFloats(heightData, 6),
+    colorData: colorData ? compactFloats(colorData, 4) : null,
+    materialMap: materialMap ? Array.from(materialMap) : null,
     resolution: RES,
     thumbnail: null,
   };
@@ -1498,7 +2183,10 @@ async function loadPresets() {
   // Guard left panel elements (may be null if removed from DOM)
   if (!$presetGrid) return;
   try {
-    const res = await fetch(API_BASE + '/api/terrains');
+    // In local mode, use the API endpoint which dynamically lists files
+    // In remote mode, use the static presets-list.json
+    const url = IS_LOCAL ? API_BASE + '/api/terrains' : API_BASE + '/presets-list.json';
+    const res = await fetch(url);
     if (!res.ok) { $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error al cargar presets</div>'; return; }
     const list = await res.json();
     if (!list.length) {
@@ -1513,9 +2201,15 @@ async function loadPresets() {
       const n = document.createElement('span'); n.className = 'p-name'; n.textContent = item.name || item.id;
       const load = document.createElement('button'); load.className = 'p-load'; load.textContent = 'Cargar';
       load.addEventListener('click', e => { e.stopPropagation(); loadPreset(item.id); });
+      const update = document.createElement('button'); update.className = 'p-update'; update.textContent = 'Actualizar';
+      update.addEventListener('click', e => { e.stopPropagation(); updatePreset(item.id); });
       const del = document.createElement('button'); del.className = 'p-del'; del.textContent = '✕';
       del.addEventListener('click', e => { e.stopPropagation(); deletePreset(item.id); });
-      div.appendChild(d); div.appendChild(n); div.appendChild(load); div.appendChild(del);
+      div.appendChild(d); div.appendChild(n); div.appendChild(load); div.appendChild(update); div.appendChild(del);
+      if (item.id === window._activePresetId) {
+        const badge = document.createElement('span'); badge.className = 'preset-active-badge'; badge.textContent = '✓ ACTIVO';
+        div.appendChild(badge);
+      }
       $presetGrid.appendChild(div);
     }
   } catch (e) {
@@ -1525,14 +2219,23 @@ async function loadPresets() {
 }
 
 async function loadPreset(id) {
-  loadingOverlay.classList.add('show');
+  // Si el id no termina en .json, agregarlo (backward compat)
+  const fileName = id.endsWith('.json') ? id : id + '.json';
+  setLoading('Cargando preset...');
   try {
-    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id));
-    if (!res.ok) { toast('Error al cargar preset'); loadingOverlay.classList.remove('show'); return; }
+    const res = await fetch(API_BASE + '/uploads/' + fileName);
+    if (!res.ok) { toast('Error al cargar preset'); hideLoading(); return; }
     const data = await res.json();
-    if (data.heightData && data.resolution) {
-      if (data.resolution !== RES) {
-        reallocateData(data.resolution);
+    // Support resolution at top level (new format) or inside params (old format)
+    const presetRes = data.resolution || (data.params && data.params.resolution);
+    if (data.heightData && presetRes) {
+      if (presetRes !== RES) {
+        reallocateData(presetRes);
+      }
+      // Ensure slider display matches resolution
+      if (data.params && data.params.resolution) {
+        $('#resolution').value = data.params.resolution;
+        $('#resolutionVal').textContent = data.params.resolution;
       }
       heightData.set(new Float32Array(data.heightData));
       baseHeightData.set(heightData);
@@ -1540,29 +2243,54 @@ async function loadPreset(id) {
     if (data.colorData) {
       colorData = new Float32Array(data.colorData);
     }
+    if (data.materialMap) {
+      materialMap = new Uint8Array(data.materialMap);
+    }
     if (data.params) applyStateSnapshot(data.params);
     needsRegen = true;
     drawCanvas();
     requestAnimationFrame(() => {
       rebuildTerrain();
       // Restore saved colors AFTER rebuild (rebuild may reset colorData)
-      if (data.colorData && data.colorData.length === RES*RES*3) {
+      // Skip if materialMap was loaded - colorData is derived from it
+      if (data.colorData && !data.materialMap && data.colorData.length === RES*RES*3) {
         colorData = new Float32Array(data.colorData);
         if (terrainMesh && state.viewMode !== 'heat') {
           updateMeshColors();
         }
       }
-      loadingOverlay.classList.remove('show');
+      // If materialMap was loaded, sync colors from it
+      if (data.materialMap && materialMap) {
+        syncColorDataFromMaterials();
+      }
+      hideLoading();
     });
+    // Store active preset info for badge display
+    window._activePresetId = id;
+    window._activePresetName = data.name || id;
+    updateActivePresetBtnState();
+    // Update URL for sharing
+    const url = new URL(window.location);
+    url.searchParams.set('preset', id);
+    url.searchParams.delete('terrain');
+    history.replaceState(null, '', url);
+    // Re-render presets list to show active badge
+    loadPresets();
+    // Re-render terrain library grid
+    buildTerrainLibrary();
+    // Show model name in viewport
+    const nameHint = document.getElementById('modelNameHint');
+    if (nameHint) nameHint.textContent = data.name || id;
     toast('Preset "' + (data.name || id) + '" cargado');
   } catch (e) {
     toast('Error de conexión al cargar preset');
-    loadingOverlay.classList.remove('show');
+    hideLoading();
     console.error(e);
   }
 }
 
 async function deletePreset(id) {
+  if (!IS_LOCAL) { toast('Eliminar preset solo disponible en modo local'); return; }
   try {
     const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id), { method: 'DELETE' });
     if (!res.ok) { toast('Error al eliminar preset'); return; }
@@ -1574,13 +2302,76 @@ async function deletePreset(id) {
   }
 }
 
+async function updatePreset(id) {
+  if (!IS_LOCAL) { toast('Actualizar preset solo disponible en modo local (localhost)'); return; }
+  if (!id) { toast('No hay preset activo para actualizar'); return; }
+  const toastMsg = toast('Actualizando preset...');
+  try {
+    const params = getStateSnapshot();
+    const payload = {
+      params: params,
+      heightData: compactFloats(heightData, 6),
+      colorData: colorData ? compactFloats(colorData, 4) : null,
+      materialMap: materialMap ? Array.from(materialMap) : null,
+      resolution: RES,
+      thumbnail: null,
+    };
+    const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { toast('Error al actualizar preset'); return; }
+    toast('Preset actualizado');
+    loadPresets();
+  } catch (e) {
+    toast('Error de conexión al actualizar preset');
+    console.error(e);
+  }
+}
+
+// Enable/disable the Actualizar button based on whether a preset is active
+function updateActivePresetBtnState() {
+  if (rightUpdatePresetBtn) {
+    rightUpdatePresetBtn.disabled = !window._activePresetId;
+  }
+}
+// Check on load
+setTimeout(updateActivePresetBtnState, 100);
+
 if ($savePresetBtn) $savePresetBtn.addEventListener('click', savePreset);
 if ($presetName) $presetName.addEventListener('keydown', e => { if (e.key === 'Enter') savePreset(); });
+if (rightUpdatePresetBtn) {
+  rightUpdatePresetBtn.addEventListener('click', () => {
+    updatePreset(window._activePresetId);
+  });
+}
 
 // Init paint mode display
 updatePaintModeDisplay();
 
 // Load presets list on boot
 setTimeout(() => loadPresets(), 500);
-loadTerrain('san-juan-color');
+
+// Check URL for ?preset=XXX or ?terrain=XXX
+const urlParams = new URLSearchParams(window.location.search);
+const hash = window.location.hash.replace('#', '');
+const presetFromUrl = urlParams.get('preset') || urlParams.get('terrain') || hash;
+if (presetFromUrl) {
+  // If it's a terrain library key, load that
+  if (TERRAIN_LIB[presetFromUrl]) {
+    loadTerrain(presetFromUrl);
+  } else {
+    // Otherwise treat as a saved preset ID
+    loadPreset(presetFromUrl);
+    // Build terrain library (loadPreset doesn't do this automatically)
+    buildTerrainLibrary();
+  }
+} else {
+  // Load sannjuanv2_limpia4 preset by default
+  loadPreset('1782427106099-sannjuanv2_limpia4.json');
+  // Build terrain library (loadPreset doesn't do this automatically)
+  buildTerrainLibrary();
+}
+
 initThree();
