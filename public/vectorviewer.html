@@ -80,6 +80,32 @@
   .tab-bar .tab.active::after { content:''; position:absolute; bottom:-1px; left:0; right:0; height:1px; background:var(--surface); }
   .tab-content { display:none; }
   .tab-content.active { display:block; }
+
+  /* ── Editor Modal ── */
+  .modal-overlay { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.85); backdrop-filter:blur(6px); opacity:0; pointer-events:none; transition:opacity 0.25s ease; }
+  .modal-overlay.open { opacity:1; pointer-events:auto; }
+  .modal-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); width:90vw; max-width:900px; max-height:90vh; display:flex; flex-direction:column; overflow:hidden; transform:scale(0.95); transition:transform 0.25s ease; }
+  .modal-overlay.open .modal-panel { transform:scale(1); }
+  .modal-header { padding:12px 16px; border-bottom:1px solid var(--border); background:var(--surface2); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+  .modal-header .title { font-size:14px; font-weight:600; flex:1; }
+  .modal-header .subtitle { font-size:11px; color:var(--text2); }
+  .modal-close { background:none; border:none; color:var(--text2); font-size:22px; cursor:pointer; padding:2px 6px; line-height:1; transition:0.15s; }
+  .modal-close:hover { color:var(--text); }
+  .modal-body { flex:1; overflow:auto; padding:16px; background:#000; display:flex; align-items:center; justify-content:center; min-height:300px; }
+  .modal-body svg { width:100%; height:auto; max-height:65vh; display:block; border-radius:4px; cursor:pointer; }
+  .modal-toolbar { padding:10px 16px; border-top:1px solid var(--border); background:var(--surface2); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+  .modal-toolbar .info { font-size:11px; color:var(--text2); flex:1; }
+  .btn-delete { background:#c0392b; color:#fff; border-color:#c0392b; }
+  .btn-delete:hover { background:#a93226; }
+  .btn-delete:disabled { opacity:0.35; cursor:not-allowed; }
+  .contour-selected { outline:2px solid #ff6b35; outline-offset:2px; }
+  .contour-hovered { cursor:pointer; }
+  .contour-hovered:hover { opacity:0.7; }
+  .seg-counter { font-size:10px; color:var(--text2); background:var(--surface); padding:2px 8px; border-radius:4px; border:1px solid var(--border); }
+  .vertex-handle { fill:#ff6b35; stroke:#fff; stroke-width:1.5; cursor:move; }
+  .vertex-handle:hover { fill:#ff944d; }
+  .vertex-handle.active { fill:#ff3300; stroke:#ff6b35; stroke-width:2; }
+  .edit-mode-badge { font-size:10px; padding:2px 8px; border-radius:4px; background:rgba(255,107,53,0.2); color:#ff6b35; border:1px solid #ff6b35; font-weight:600; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
@@ -91,6 +117,8 @@
     <div><h1>Exportar Vectores</h1><div class="sub">Capas vectorizadas para maqueta</div></div>
     <div class="spacer"></div>
     <button class="btn btn-primary" id="recalculateBtn" style="display:none;">&#x21BB; Recalcular</button>
+    <button class="btn" id="importSvgBtn" style="margin-right:4px;">&#x1F5BC; Importar SVG</button>
+    <input type="file" id="importSvgInput" accept=".svg" style="display:none;">
     <button class="btn btn-green" id="downloadAllBtn" disabled>&#x1F4E6; Descargar todas</button>
   </div>
 
@@ -108,6 +136,10 @@
       <input type="checkbox" id="showEmptyToggle">
       <span class="control-label">Mostrar vacías</span>
     </div>
+    <div class="spacer"></div>
+    <button class="btn" id="downloadTierraBtn" disabled style="font-size:10px;padding:4px 8px;">🪨 Tierra todas</button>
+    <button class="btn" id="downloadAguaBtn" disabled style="font-size:10px;padding:4px 8px;">🌊 Agua todas</button>
+    <button class="btn" id="downloadAllCombinedBtn" disabled style="font-size:10px;padding:4px 8px;">📄 Todas las capas</button>
   </div>
 
   <div class="body" id="body">
@@ -143,6 +175,29 @@
 
 <div class="toast" id="toast"></div>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div><span id="loadingText">Generando vectores...</span></div>
+
+<!-- ── Editor Modal ── -->
+<div class="modal-overlay" id="editorModal">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <span class="title" id="editorTitle">Editar capa</span>
+      <span class="subtitle" id="editorSubtitle"></span>
+      <button class="modal-close" id="editorClose">&times;</button>
+    </div>
+    <div class="modal-body" id="editorBody">
+      <svg id="editorSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130" width="100%"></svg>
+    </div>
+    <div class="modal-toolbar" id="editorToolbar">
+      <span class="info" id="editorInfo">Seleccioná un contorno en la imagen para borrarlo</span>
+      <span class="edit-mode-badge" id="editModeBadge" style="display:none;">✎ Editando vértices</span>
+      <span class="seg-counter" id="editorCounter">0 contornos</span>
+      <button class="btn" id="editorFinishEditBtn" style="display:none;padding:4px 10px;font-size:10px;">✓ Terminar edición</button>
+      <button class="btn btn-delete" id="editorDeleteBtn" disabled>🗑 Borrar contorno</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Hidden file input for SVG import (wired in JS) ── -->
 
 <script>
 // ═══════════════════════════════════════════════════════
@@ -401,6 +456,16 @@ function getNonHolePaths(pathData) {
     }).filter(p => !isNaN(p.x));
   });
   
+  // Compute signed area for each polygon (clockwise = positive)
+  function polygonArea(poly) {
+    let area = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      area += (poly[j].x * poly[i].y - poly[i].x * poly[j].y);
+    }
+    return Math.abs(area) / 2;
+  }
+  const areas = polygons.map(polygonArea);
+  
   // Ray-casting point-in-polygon test
   function pointInPolygon(px, py, poly) {
     let inside = false;
@@ -416,7 +481,7 @@ function getNonHolePaths(pathData) {
   
   const keep = [];
   for (let i = 0; i < polygons.length; i++) {
-    if (polygons[i].length < 3) continue;
+    if (polygons[i].length < 3 || areas[i] < 0.01) continue;
     // Centroid of the polygon
     let cx = 0, cy = 0;
     for (const p of polygons[i]) { cx += p.x; cy += p.y; }
@@ -426,9 +491,8 @@ function getNonHolePaths(pathData) {
     let isHole = false;
     for (let j = 0; j < polygons.length; j++) {
       if (i === j) continue;
-      // Hole check: this path is inside another path that has more points
-      // (outer boundary has more points than inner boundaries)
-      if (polygons[j].length <= polygons[i].length) continue;
+      // Only larger-area polygons can contain holes (inner boundaries are smaller area)
+      if (areas[j] <= areas[i]) continue;
       if (pointInPolygon(cx, cy, polygons[j])) {
         isHole = true;
         break;
@@ -553,6 +617,7 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
   switchTab('layers');
   layerGrid.innerHTML = '';
   downloadAllBtn.disabled = false;
+  enableCombinedBtns();
   controlsRow.style.display = 'flex';
 
   // The contour padding adds a ring of zero cells around the data.
@@ -596,6 +661,13 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
     dlBtn.addEventListener('click', () => downloadLayerSvg(layer.index, layer.material));
     header.appendChild(dlBtn);
 
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn dl-btn';
+    editBtn.textContent = '✎ Editar';
+    editBtn.disabled = layer.empty;
+    editBtn.addEventListener('click', () => openEditor(layer.index, layer.material));
+    header.appendChild(editBtn);
+
     card.appendChild(header);
 
     const body = document.createElement('div');
@@ -623,6 +695,41 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
           : '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>');
     }
     body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent + '</svg>';
+    card.appendChild(body);
+    layerGrid.appendChild(card);
+  }
+
+  // Combined preview cards (tierra todas, agua todas, todas las capas)
+  const combinedModes = [
+    { mode: 'tierra', icon: '🪨', label: 'Todas las Tierra', matName: 'tierra' },
+    { mode: 'agua', icon: '🌊', label: 'Todas las Agua', matName: 'agua' },
+    { mode: 'all', icon: '📄', label: 'Todas las capas', matName: 'todas' }
+  ];
+  for (const cm of combinedModes) {
+    const svgContent = buildCombinedSvg(layers, cm.mode);
+    if (!svgContent) continue;
+    const card = document.createElement('div');
+    card.className = 'layer-card';
+    const header = document.createElement('div');
+    header.className = 'layer-card-header';
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = cm.icon + ' ' + cm.label;
+    header.appendChild(num);
+    const label = document.createElement('span');
+    label.className = 'label';
+    const nonEmpty = layers.filter(l => !l.empty && (cm.mode === 'all' || (cm.mode === 'tierra' ? l.material === 0 : l.material === 1)));
+    label.textContent = nonEmpty.length + ' capas combinadas';
+    header.appendChild(label);
+    const dlBtn = document.createElement('button');
+    dlBtn.className = 'btn dl-btn';
+    dlBtn.textContent = 'Descargar SVG';
+    dlBtn.addEventListener('click', () => downloadCombined(cm.mode));
+    header.appendChild(dlBtn);
+    card.appendChild(header);
+    const body = document.createElement('div');
+    body.className = 'layer-card-body';
+    body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '') + '</svg>';
     card.appendChild(body);
     layerGrid.appendChild(card);
   }
@@ -667,6 +774,76 @@ function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, 
     '</svg>';
 }
 
+// ═══════════════════════════════════════════════════════
+// COMBINED SVG (export all layers of a type in one SVG)
+// ═══════════════════════════════════════════════════════
+function buildCombinedSvg(layers, mode) {
+  const nonEmpty = layers.filter(l => !l.empty);
+  if (nonEmpty.length === 0) return null;
+  const padX = terrainWidth / (g_origRES - 1);
+  const padZ = terrainDepth / (g_origRES - 1);
+  const mgn = Math.max(padX, padZ) + 0.5;
+  const vb = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
+  const cx = terrainWidth / 2, cy = terrainDepth / 2;
+  const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+    ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+    : '';
+  const sw = g_strokeWidth;
+
+  let paths = '';
+  if (mode === 'all') {
+    // 1) Agua layers: fill+stroke
+    for (const l of nonEmpty) {
+      if (l.material !== 1) continue;
+      const color = g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff';
+      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+    }
+    // 2) Tierra layers: stroke-only on non-hole paths
+    for (const l of nonEmpty) {
+      if (l.material !== 0) continue;
+      const color = g_materials && g_materials[0] ? g_materials[0].color : '#c4a265';
+      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+        '<path d="' + getNonHolePaths(l.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9"' + scaleStr + '/>';
+    }
+  } else if (mode === 'tierra') {
+    const color = g_materials && g_materials[0] ? g_materials[0].color : '#c4a265';
+    for (const l of nonEmpty) {
+      if (l.material !== 0) continue;
+      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+        '<path d="' + getNonHolePaths(l.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9"' + scaleStr + '/>';
+    }
+  } else if (mode === 'agua') {
+    const color = g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff';
+    for (const l of nonEmpty) {
+      if (l.material !== 1) continue;
+      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+    }
+  }
+
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="800" height="' + (800 * (terrainDepth + 2*mgn) / (terrainWidth + 2*mgn)) + '">' +
+    '<rect width="100%" height="100%" fill="#0e0e14"/>' +
+    paths +
+    '</svg>';
+}
+
+function downloadCombined(mode) {
+  const layers = currentLayers;
+  const svg = buildCombinedSvg(layers, mode);
+  if (!svg) { toast('No hay capas para exportar'); return; }
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const names = { tierra: 'capa_tierra_todas.svg', agua: 'capa_agua_todas.svg', all: 'todaslascapas.svg' };
+  a.download = names[mode] || 'capas_combinadas.svg';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('SVG combinado descargado');
+}
+
+// ═══════════════════════════════════════════════════════
+// DOWNLOAD INDIVIDUAL
+// ═══════════════════════════════════════════════════════
 function downloadLayerSvg(layerIndex, material) {
   const layer = currentLayers.find(l => l.index === layerIndex && l.material === material);
   if (!layer || layer.empty) { toast('Esta capa no tiene contorno'); return; }
@@ -676,7 +853,7 @@ function downloadLayerSvg(layerIndex, material) {
   const a = document.createElement('a');
   a.href = url;
   const matName = material === 1 ? 'agua' : 'tierra';
-  a.download = 'capa_' + matName + '_' + layerIndex.toString().padStart(2, '0') + '.svg';
+  a.download = 'capa_' + matName + '_' + layerIndex + '.svg';
   a.click();
   URL.revokeObjectURL(url);
   toast('Capa ' + matName + ' ' + layerIndex + ' descargada');
@@ -693,10 +870,14 @@ function downloadAll() {
       const a = document.createElement('a');
       a.href = url;
       const matName = layer.material === 1 ? 'agua' : 'tierra';
-      a.download = 'capa_' + matName + '_' + layer.index.toString().padStart(2, '0') + '.svg';
+      a.download = 'capa_' + matName + '_' + layer.index + '.svg';
       a.click();
       URL.revokeObjectURL(url);
     }
+    // Combined SVGs (fallback)
+    downloadCombined('tierra');
+    downloadCombined('agua');
+    downloadCombined('all');
     toast('Todas las capas descargadas');
     return;
   }
@@ -705,13 +886,21 @@ function downloadAll() {
     try {
       const zip = new JSZip();
       let count = 0;
+      // Individual layers
       for (const layer of currentLayers) {
         if (layer.empty) continue;
         const svg = buildLayerSvg(layer.index, layer.pathData, terrainWidth, terrainDepth, layer.empty, layer.material);
         const matName = layer.material === 1 ? 'agua' : 'tierra';
-        zip.file('capa_' + matName + '_' + layer.index.toString().padStart(2, '0') + '.svg', svg);
+        zip.file('capa_' + matName + '_' + layer.index + '.svg', svg);
         count++;
       }
+      // Combined SVGs
+      const tierraSvg = buildCombinedSvg(currentLayers, 'tierra');
+      const aguaSvg = buildCombinedSvg(currentLayers, 'agua');
+      const allSvg = buildCombinedSvg(currentLayers, 'all');
+      if (tierraSvg) { zip.file('capa_tierra_todas.svg', tierraSvg); count++; }
+      if (aguaSvg) { zip.file('capa_agua_todas.svg', aguaSvg); count++; }
+      if (allSvg) { zip.file('todaslascapas.svg', allSvg); count++; }
       const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
       const url = URL.createObjectURL(content);
       const a = document.createElement('a');
@@ -728,6 +917,21 @@ function downloadAll() {
   }, 50);
 }
 downloadAllBtn.addEventListener('click', downloadAll);
+
+// Combined download buttons
+document.getElementById('downloadTierraBtn').addEventListener('click', () => downloadCombined('tierra'));
+document.getElementById('downloadAguaBtn').addEventListener('click', () => downloadCombined('agua'));
+document.getElementById('downloadAllCombinedBtn').addEventListener('click', () => downloadCombined('all'));
+
+// Enable combined buttons when data loads (inside renderLayers)
+let g_combinedBtnsEnabled = false;
+function enableCombinedBtns() {
+  if (g_combinedBtnsEnabled) return;
+  document.getElementById('downloadTierraBtn').disabled = false;
+  document.getElementById('downloadAguaBtn').disabled = false;
+  document.getElementById('downloadAllCombinedBtn').disabled = false;
+  g_combinedBtnsEnabled = true;
+}
 
 // ═══════════════════════════════════════════════════════
 // OVERLAY: superposed layer viewer with toggle checkboxes
@@ -883,6 +1087,724 @@ function setupOverlayToggles() {
 function renderOverlay() {
   setupOverlayToggles();
 }
+
+// ═══════════════════════════════════════════════════════
+// CONTOUR EDITOR — large view, select & delete contours
+// ═══════════════════════════════════════════════════════
+let g_editLayerIndex = -1;
+let g_editLayerMaterial = -1;
+let g_editSegments = []; // array of [{pathData, bounds}]
+let g_editSelectedIndices = new Set();
+let g_editHoveredIdx = -1;
+
+function parsePathData(pathData) {
+  // Split "Mx1,y1Lx2,y2...ZMx3,y3..." into individual segments
+  if (!pathData) return [];
+  const segs = [];
+  let i = 0;
+  while (i < pathData.length) {
+    if (pathData[i] !== 'M' && pathData[i] !== 'm') { i++; continue; }
+    const start = i;
+    while (i < pathData.length && pathData[i] !== 'Z' && pathData[i] !== 'z') i++;
+    if (i < pathData.length) i++; // include Z
+    segs.push(pathData.slice(start, i));
+  }
+  return segs;
+}
+
+function getSegBounds(seg) {
+  // Compute bounding box of a path segment "Mx,yLx,y..."
+  const pts = seg.replace(/[MLZmlz]/g, ' ').trim().split(/\s+/);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    const parts = p.split(',');
+    if (parts.length < 2) continue;
+    const x = parseFloat(parts[0]), y = parseFloat(parts[1]);
+    if (isNaN(x) || isNaN(y)) continue;
+    if (x < minX) minX = x; if (y < minY) minY = y;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function openEditor(layerIndex, material) {
+  const layer = currentLayers.find(l => l.index === layerIndex && l.material === material);
+  if (!layer || layer.empty) return;
+  g_editLayerIndex = layerIndex;
+  g_editLayerMaterial = material;
+  g_editSelectedIndices = new Set();
+  g_editHoveredIdx = -1;
+
+  // Parse pathData into individual segments
+  g_editSegments = parsePathData(layer.pathData).map((seg, idx) => ({
+    pathData: seg,
+    bounds: getSegBounds(seg),
+    index: idx
+  }));
+
+  // Title
+  const matPrefix = material === 1 ? '🌊 Agua' : '🏔 Tierra';
+  const cfg = g_layerConfig && g_layerConfig[layerIndex];
+  document.getElementById('editorTitle').textContent = '✎ ' + matPrefix + ' ' + (cfg ? cfg.name : 'Capa ' + layerIndex);
+  document.getElementById('editorSubtitle').textContent = g_editSegments.length + ' contornos';
+  document.getElementById('editorCounter').textContent = g_editSegments.length + ' contornos';
+  document.getElementById('editorDeleteBtn').disabled = true;
+
+  // Build the SVG
+  renderEditorSvg();
+
+  // Show modal
+  document.getElementById('editorModal').classList.add('open');
+}
+
+function closeEditor() {
+  document.getElementById('editorModal').classList.remove('open');
+  g_editLayerIndex = -1;
+  g_editLayerMaterial = -1;
+  g_editSegments = [];
+  g_editSelectedIndices = new Set();
+}
+
+function renderEditorSvg() {
+  const svg = document.getElementById('editorSvg');
+  const layer = currentLayers.find(l => l.index === g_editLayerIndex && l.material === g_editLayerMaterial);
+  if (!layer) return;
+
+  // Same viewBox as layer cards
+  const padX = terrainWidth / (g_origRES - 1);
+  const padZ = terrainDepth / (g_origRES - 1);
+  const mgn = Math.max(padX, padZ) + 0.5;
+  const vb = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
+  svg.setAttribute('viewBox', vb);
+
+  const matColor = g_editLayerMaterial === 1
+    ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+    : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+  const cx = terrainWidth / 2, cy = terrainDepth / 2;
+  const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+    ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+    : '';
+
+  let content = '<rect width="100%" height="100%" fill="#0e0e14"/>';
+
+  // Render each segment individually so we can select/hover them
+  for (let i = 0; i < g_editSegments.length; i++) {
+    const seg = g_editSegments[i];
+    const isSelected = g_editSelectedIndices.has(i);
+    const isHovered = i === g_editHoveredIdx;
+    const sw = g_editLayerMaterial === 0 ? '1.5' : '1.5';
+    const fill = isSelected ? 'rgba(255,107,53,0.3)' : 'none';
+    const stroke = isSelected ? '#ff6b35' : matColor;
+    const strokeW = isSelected ? '3' : sw;
+    const extraClass = 'seg-' + i;
+
+    if (g_editLayerMaterial === 0) {
+      // Tierra: fill with matColor, stroke on non-hole paths
+      // For the editor, just render each segment individually
+      content += '<path d="' + seg.pathData + '" fill="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke="none" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+      content += '<path d="' + getNonHolePaths(seg.pathData) + '" fill="none" stroke="' + stroke + '" stroke-width="' + strokeW + '" opacity="0.9" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+    } else {
+      // Agua: fill + stroke
+      content += '<path d="' + seg.pathData + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+    }
+  }
+
+  // Add invisible hit-targets on top for clicking
+  content += '<g class="hit-targets" style="cursor:pointer;">';
+  for (let i = 0; i < g_editSegments.length; i++) {
+    const seg = g_editSegments[i];
+    const b = seg.bounds;
+    // Use a padded rect that covers each segment's bounding box
+    const pad = 1;
+    content += '<rect x="' + (b.minX - pad) + '" y="' + (b.minY - pad) + '" width="' + (b.maxX - b.minX + pad * 2) + '" height="' + (b.maxY - b.minY + pad * 2) + '" fill="transparent" data-seg="' + i + '" class="hit-zone"/>';
+  }
+  content += '</g>';
+
+  svg.innerHTML = content;
+
+  // Bind hover & click events on hit zones
+  svg.querySelectorAll('.hit-zone').forEach(el => {
+    const idx = parseInt(el.dataset.seg);
+    el.addEventListener('mouseenter', () => {
+      g_editHoveredIdx = idx;
+      highlightSeg(idx, true);
+    });
+    el.addEventListener('mouseleave', () => {
+      g_editHoveredIdx = -1;
+      highlightSeg(idx, false);
+    });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectSeg(idx, e.ctrlKey || e.metaKey);
+    });
+  });
+
+  // In vertex edit mode, add draggable handles for the editing contour
+  if (g_editVertexMode && g_editVertexContourIdx >= 0 && g_editVertexPoints.length >= 2) {
+    const vertexGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    vertexGroup.setAttribute('class', 'vertex-handles');
+    for (let vi = 0; vi < g_editVertexPoints.length; vi++) {
+      const pt = g_editVertexPoints[vi];
+      const circ = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circ.setAttribute('cx', pt.x);
+      circ.setAttribute('cy', pt.y);
+      circ.setAttribute('r', '4');
+      circ.setAttribute('class', 'vertex-handle' + (vi === g_editActiveHandle ? ' active' : ''));
+      circ.dataset.vi = vi;
+      // Drag start
+      circ.addEventListener('mousedown', (e2) => {
+        e2.stopPropagation();
+        g_editActiveHandle = parseInt(e2.target.dataset.vi);
+        const pt2 = g_editVertexPoints[g_editActiveHandle];
+        g_editDragOffset = { dx: e2.clientX, dy: e2.clientY };
+        const vbEl = svg.querySelector('rect');
+        if (vbEl) { svg.appendChild(vbEl); } // keep rect at the back
+      });
+      vertexGroup.appendChild(circ);
+    }
+    svg.appendChild(vertexGroup);
+
+    // Global mousemove/mouseup for dragging
+    if (!svg._dragBound) {
+      svg._dragBound = true;
+      svg.addEventListener('mousemove', (e2) => {
+        if (g_editActiveHandle < 0 || !g_editDragOffset) return;
+        const pt = g_editVertexPoints[g_editActiveHandle];
+        if (!pt) return;
+        // Convert screen movement to SVG coordinate delta
+        const rect = svg.getBoundingClientRect();
+        const vbW = parseFloat(svg.getAttribute('viewBox').split(/\s+/)[2]);
+        const scale = vbW / rect.width;
+        const dx = (e2.clientX - g_editDragOffset.dx) * scale;
+        const dy = (e2.clientY - g_editDragOffset.dy) * scale;
+        g_editDragOffset = { dx: e2.clientX, dy: e2.clientY };
+        pt.x += dx;
+        pt.y += dy;
+        // Update circle position
+        const circ = svg.querySelector('.vertex-handle.active');
+        if (circ) {
+          circ.setAttribute('cx', pt.x);
+          circ.setAttribute('cy', pt.y);
+        }
+      });
+      svg.addEventListener('mouseup', () => {
+        if (g_editActiveHandle >= 0) {
+          // Update the contour rendering in real-time
+          const tempPath = pointsToPathData(g_editVertexPoints);
+          g_editSegments[g_editVertexContourIdx].pathData = tempPath;
+          g_editSegments[g_editVertexContourIdx].bounds = getSegBounds(tempPath);
+          // Re-render just the contour paths (not the entire editor - keep handles)
+          updateEditorPaths();
+        }
+        g_editActiveHandle = -1;
+        g_editDragOffset = null;
+      });
+    }
+  }
+}
+
+// Update just the path rendering (not handles) during drag
+function updateEditorPaths() {
+  const svg = document.getElementById('editorSvg');
+  if (!svg || g_editVertexContourIdx < 0) return;
+  const matColor = g_editLayerMaterial === 1
+    ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+    : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+  const cx = terrainWidth / 2, cy = terrainDepth / 2;
+  const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
+    ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
+    : '';
+
+  // Remove old path rendering (keep rect background)
+  svg.querySelectorAll('.seg-path').forEach(p => p.remove());
+
+  // Insert new paths before hit-targets
+  const hitTargets = svg.querySelector('.hit-targets');
+  if (!hitTargets) return;
+
+  // Render the editing contour with the updated pathData
+  for (let i = 0; i < g_editSegments.length; i++) {
+    const seg = g_editSegments[i];
+    const isSelected = i === g_editVertexContourIdx;
+    const isVertexMode = g_editVertexMode && i === g_editVertexContourIdx;
+    const sw = '1.5';
+    const stroke = isSelected && isVertexMode ? '#ff6b35' : matColor;
+    const strokeW = isSelected ? '3' : sw;
+    const extraClass = 'seg-path seg-' + i;
+
+    if (g_editLayerMaterial === 0) {
+      const fillPath = createSvgElement('path', {
+        d: seg.pathData, fill: matColor, stroke: 'none',
+        opacity: '0.9', 'fill-rule': 'evenodd',
+        class: extraClass
+      }, scaleStr);
+      const strokePath = createSvgElement('path', {
+        d: getNonHolePaths(seg.pathData), fill: 'none',
+        stroke: stroke, 'stroke-width': strokeW, opacity: '0.9',
+        class: extraClass
+      }, scaleStr);
+      svg.insertBefore(fillPath, hitTargets);
+      svg.insertBefore(strokePath, hitTargets);
+    } else {
+      const path = createSvgElement('path', {
+        d: seg.pathData, fill: isSelected ? 'rgba(255,107,53,0.3)' : 'none',
+        stroke: stroke, 'stroke-width': strokeW, opacity: '0.9',
+        'fill-rule': 'evenodd', class: extraClass
+      }, scaleStr);
+      svg.insertBefore(path, hitTargets);
+    }
+  }
+}
+
+function createSvgElement(tag, attrs, transform) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    el.setAttribute(k, v);
+  }
+  if (transform) el.setAttribute('transform', transform);
+  return el;
+}
+
+function highlightSeg(idx, on) {
+  const svg = document.getElementById('editorSvg');
+  const paths = svg.querySelectorAll('.seg-' + idx);
+  paths.forEach(p => {
+    if (on && !g_editSelectedIndices.has(idx)) {
+      p.setAttribute('opacity', '0.7');
+    } else {
+      p.setAttribute('opacity', '0.9');
+    }
+  });
+}
+
+function selectSeg(idx, ctrl) {
+  if (ctrl) {
+    // Ctrl+click: enter vertex edit mode for this contour
+    if (typeof g_editVertexMode !== 'undefined' && g_editVertexMode) exitVertexEdit();
+    g_editSelectedIdx = idx;
+    g_editSelectedIndices = new Set([idx]);
+    enterVertexEdit(idx);
+    return;
+  }
+  // Normal click: single selection
+  if (g_editVertexMode) return;
+  g_editSelectedIdx = idx;
+  g_editSelectedIndices = new Set([idx]);
+
+  // Apply highlights
+  const svg = document.getElementById('editorSvg');
+  const matColor = g_editLayerMaterial === 1
+    ? (g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff')
+    : (g_materials && g_materials[0] ? g_materials[0].color : '#c4a265');
+  svg.querySelectorAll('[class*="seg-"]').forEach(p => {
+    const classes = p.getAttribute('class') || '';
+    const match = classes.match(/seg-(\d+)/);
+    if (match) {
+      const si = parseInt(match[1]);
+      if (si === idx) {
+        p.setAttribute('stroke', '#ff6b35');
+        p.setAttribute('stroke-width', '3');
+        if (g_editLayerMaterial !== 0) p.setAttribute('fill', 'rgba(255,107,53,0.3)');
+      } else {
+        p.setAttribute('stroke', matColor);
+        p.setAttribute('stroke-width', '1.5');
+        p.setAttribute('fill', g_editLayerMaterial === 0 ? matColor : 'none');
+        p.setAttribute('opacity', '0.9');
+      }
+    }
+  });
+
+  document.getElementById('editorInfo').textContent = 'Contorno ' + (idx + 1) + ' de ' + g_editSegments.length + ' seleccionado — Ctrl+click para editar vértices';
+  document.getElementById('editorDeleteBtn').disabled = false;
+}
+
+function deleteSelectedContour() {
+  if (g_editSelectedIndices.size === 0) return;
+  // If in vertex edit mode, exit it first
+  if (typeof g_editVertexMode !== 'undefined' && g_editVertexMode) exitVertexEdit();
+  // Delete all selected contours at once — sort descending so splice doesn't shift indices
+  const sorted = [...g_editSelectedIndices].sort((a, b) => b - a);
+  const deleted = sorted.length;
+  for (const idx of sorted) {
+    g_editSegments.splice(idx, 1);
+  }
+  g_editSelectedIndices = new Set();
+
+  // Rebuild pathData for the layer
+  const newPathData = g_editSegments.map(s => s.pathData).join('');
+  const layer = currentLayers.find(l => l.index === g_editLayerIndex && l.material === g_editLayerMaterial);
+  if (layer) {
+    layer.pathData = newPathData;
+    layer.polygonCount = g_editSegments.length;
+    layer.empty = g_editSegments.length === 0;
+  }
+
+  // Update UI
+  document.getElementById('editorCounter').textContent = g_editSegments.length + ' contornos';
+  document.getElementById('editorDeleteBtn').disabled = true;
+  document.getElementById('editorInfo').textContent = g_editSegments.length > 0
+    ? deleted + ' contorno' + (deleted > 1 ? 's' : '') + ' borrado' + (deleted > 1 ? 's' : '')
+    : 'No quedan contornos.';
+  document.getElementById('editorSubtitle').textContent = g_editSegments.length + ' contornos';
+
+  // If no segments left, show empty state
+  if (g_editSegments.length === 0) {
+    const svg = document.getElementById('editorSvg');
+    svg.innerHTML = '<rect width="100%" height="100%" fill="#0e0e14"/><text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Sin contornos restantes</text>';
+    rerenderFromCurrent();
+    toast(deleted + ' contorno' + (deleted > 1 ? 's' : '') + ' eliminado' + (deleted > 1 ? 's' : ''));
+    return;
+  }
+
+  // Rerender the editor SVG
+  renderEditorSvg();
+  // Update the main grid and overlay immediately
+  rerenderFromCurrent();
+  toast(deleted + ' contorno' + (deleted > 1 ? 's' : '') + ' eliminado' + (deleted > 1 ? 's' : ''));
+}
+
+// ═══════════════════════════════════════════════════════
+// SVG IMPORT
+// ═══════════════════════════════════════════════════════
+
+// Simple SVG path parser: converts any SVG path (with M, L, C, Q, A, Z)
+// to M...L...Z format. Uses linear approximation for curves.
+function parseSvgPathD(d) {
+  if (!d) return [];
+  // Tokenize: split into command/coordinate pairs
+  // First, normalize all commands to uppercase and add spaces
+  let s = d;
+  // Insert space before commands (except at start)
+  s = s.replace(/([MLHVCSQTAZmlhvcsqtaz])/g, ' $1');
+  const tokens = s.trim().split(/\s+/);
+
+  const segs = [];
+  let i = 0;
+  let curX = 0, curY = 0; // current position
+  let startX = 0, startY = 0; // subpath start
+  let prevCmd = '';
+
+  function readCoords(count, relative) {
+    const coords = [];
+    while (coords.length < count * 2 && i < tokens.length) {
+      const t = tokens[i];
+      if (/^[MLHVCSQTAZmlhvcsqtaz]$/.test(t)) break; // next command
+      const v = parseFloat(t);
+      if (!isNaN(v)) coords.push(v);
+      i++;
+    }
+    if (relative) {
+      for (let j = 0; j < coords.length; j += 2) {
+        coords[j] += curX;
+        coords[j+1] += curY;
+      }
+    }
+    return coords;
+  }
+
+  while (i < tokens.length) {
+    const cmd = tokens[i++];
+    if (!cmd) break;
+
+    if (cmd === 'Z' || cmd === 'z') {
+      segs.push({ x: startX, y: startY });
+      curX = startX;
+      curY = startY;
+      prevCmd = cmd;
+      continue;
+    }
+
+    const isRel = cmd === cmd.toLowerCase();
+    const upCmd = cmd.toUpperCase();
+
+    if (upCmd === 'M') {
+      // Close previous subpath if any
+      const coords = readCoords(1, isRel);
+      if (coords.length >= 2) {
+        startX = coords[0]; startY = coords[1];
+        curX = startX; curY = startY;
+        segs.push({ x: curX, y: curY });
+        // Implicit L if more coords follow M
+        let j = 2;
+        while (j + 1 < coords.length) {
+          segs.push({ x: coords[j], y: coords[j+1] });
+          j += 2;
+        }
+      }
+      prevCmd = cmd;
+    } else if (upCmd === 'L') {
+      const coords = readCoords(1, isRel);
+      for (let j = 0; j + 1 < coords.length; j += 2) {
+        segs.push({ x: coords[j], y: coords[j+1] });
+        curX = coords[j]; curY = coords[j+1];
+      }
+      prevCmd = cmd;
+    } else if (upCmd === 'H') {
+      const coords = readCoords(1, false);
+      for (const x of coords) {
+        const nx = isRel ? curX + x : x;
+        segs.push({ x: nx, y: curY });
+        curX = nx;
+      }
+      prevCmd = cmd;
+    } else if (upCmd === 'V') {
+      const coords = readCoords(1, false);
+      for (const y of coords) {
+        const ny = isRel ? curY + y : y;
+        segs.push({ x: curX, y: ny });
+        curY = ny;
+      }
+      prevCmd = cmd;
+    } else if (upCmd === 'C' || upCmd === 'S' || upCmd === 'Q' || upCmd === 'T') {
+      // Curve commands: approximate with line segments (sample the curve)
+      const n = upCmd === 'C' ? 3 : (upCmd === 'S' ? 3 : (upCmd === 'Q' ? 2 : 2));
+      const coords = readCoords(n, isRel);
+      if (coords.length >= 4) {
+        // Linear approximation: use end point directly (simple but effective for simple SVGs)
+        const endX = coords[coords.length - 2];
+        const endY = coords[coords.length - 1];
+        // Sample 5 points along the curve for better approximation
+        const samples = 5;
+        for (let t = 1; t <= samples; t++) {
+          const p = t / samples;
+          let px, py;
+          if (upCmd === 'Q' || upCmd === 'T') {
+            // Quadratic bezier: P = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
+            const p1x = coords[0], p1y = coords[1];
+            const p2x = endX, p2y = endY;
+            const t1 = 1 - p;
+            px = t1*t1*curX + 2*t1*p*p1x + p*p*p2x;
+            py = t1*t1*curY + 2*t1*p*p1y + p*p*p2y;
+          } else {
+            // Cubic bezier: P = (1-t)^3*P0 + 3(1-t)^2*t*P1 + 3(1-t)*t^2*P2 + t^3*P3
+            const p1x = coords[0], p1y = coords[1];
+            const p2x = coords[2], p2y = coords[3];
+            const p3x = endX, p3y = endY;
+            const t1 = 1 - p;
+            px = t1*t1*t1*curX + 3*t1*t1*p*p1x + 3*t1*p*p*p2x + p*p*p*p3x;
+            py = t1*t1*t1*curY + 3*t1*t1*p*p1y + 3*t1*p*p*p2y + p*p*p*p3y;
+          }
+          segs.push({ x: px, y: py });
+        }
+        curX = endX; curY = endY;
+      }
+      prevCmd = cmd;
+    } else if (upCmd === 'A') {
+      // Arc: approximate with line segments (just use end point)
+      const coords = readCoords(7, false);
+      if (coords.length >= 7) {
+        const endX = isRel ? curX + coords[5] : coords[5];
+        const endY = isRel ? curY + coords[6] : coords[6];
+        const rx = Math.abs(coords[0]), ry = Math.abs(coords[1]);
+        // Sample arc into ~10 segments
+        const samples = 10;
+        for (let t = 1; t <= samples; t++) {
+          const p = t / samples;
+          const px = curX + (endX - curX) * p;
+          const py = curY + (endY - curY) * p;
+          segs.push({ x: px, y: py });
+        }
+        curX = endX; curY = endY;
+      }
+      prevCmd = cmd;
+    } else {
+      // Unknown command - skip
+      prevCmd = cmd;
+    }
+  }
+
+  return segs;
+}
+
+function pointsToPathData(pts) {
+  if (!pts || pts.length < 2) return '';
+  let d = 'M' + pts[0].x.toFixed(2) + ',' + pts[0].y.toFixed(2);
+  for (let i = 1; i < pts.length; i++) {
+    d += 'L' + pts[i].x.toFixed(2) + ',' + pts[i].y.toFixed(2);
+  }
+  d += 'Z';
+  return d;
+}
+
+function importSvgFromString(svgText) {
+  setLoading('Procesando SVG...');
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgText, 'image/svg+xml');
+    const paths = doc.querySelectorAll('path');
+    const allPathData = [];
+
+    for (const path of paths) {
+      const d = path.getAttribute('d');
+      if (!d) continue;
+      const pts = parseSvgPathD(d);
+      if (pts.length >= 2) {
+        allPathData.push(pointsToPathData(pts));
+      }
+    }
+
+    if (allPathData.length === 0) {
+      toast('No se encontraron paths en el SVG');
+      hideLoading();
+      return;
+    }
+
+    // Detect viewBox for dimensions
+    let svgW = 130, svgH = 130;
+    const svgEl = doc.querySelector('svg');
+    if (svgEl) {
+      const vb = svgEl.getAttribute('viewBox');
+      if (vb) {
+        const parts = vb.split(/\s+/).map(Number);
+        if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) {
+          svgW = parts[2];
+          svgH = parts[3];
+        }
+      }
+    }
+
+    const combinedPathData = allPathData.join('');
+
+    // Create a virtual layer entry
+    const importLayer = {
+      index: 999,
+      material: 0,
+      threshold: 1,
+      polygonCount: allPathData.length,
+      pathData: combinedPathData,
+      empty: false
+    };
+
+    // Ensure global vars are set
+    terrainWidth = svgW;
+    terrainDepth = svgH;
+    g_origRES = 128;
+    g_numLayers = 1;
+    g_materialMap = null;
+    g_materials = [{ id: 0, name: 'Importado', color: '#c4a265' }];
+    g_layerConfig = {};
+
+    // Clear existing and show only this
+    currentLayers = [importLayer];
+    renderLayers(currentLayers, terrainWidth, terrainDepth);
+    hideLoading();
+    toast('SVG importado: ' + allPathData.length + ' contornos');
+
+    // Auto-open the editor
+    setTimeout(() => openEditor(999, 0), 300);
+  } catch(e) {
+    hideLoading();
+    toast('Error al importar SVG: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// CTRL+CLICK VERTEX EDITING
+// ═══════════════════════════════════════════════════════
+
+let g_ctrlHeld = false;
+let g_editVertexMode = false;
+let g_editVertexContourIdx = -1;
+let g_editVertexPoints = []; // [{x, y}]
+let g_editActiveHandle = -1;
+let g_editDragOffset = null;
+
+function exitVertexEdit() {
+  g_editVertexMode = false;
+  g_editVertexContourIdx = -1;
+  g_editVertexPoints = [];
+  g_editActiveHandle = -1;
+  g_editDragOffset = null;
+  document.getElementById('editModeBadge').style.display = 'none';
+  document.getElementById('editorFinishEditBtn').style.display = 'none';
+  document.getElementById('editorInfo').textContent = g_editSelectedIndices.size > 0
+    ? 'Ctrl+click para editar vértices'
+    : 'Seleccioná un contorno para borrarlo o Ctrl+click para editarlo';
+  renderEditorSvg();
+}
+
+function enterVertexEdit(contourIdx) {
+  if (contourIdx < 0 || contourIdx >= g_editSegments.length) return;
+  g_editVertexMode = true;
+  g_editVertexContourIdx = contourIdx;
+  g_editActiveHandle = -1;
+  g_editDragOffset = null;
+
+  // Parse the contour's pathData into points
+  const seg = g_editSegments[contourIdx].pathData;
+  const pts = parseSvgPathD(seg);
+  g_editVertexPoints = pts.length >= 2 ? pts : [];
+
+  document.getElementById('editModeBadge').style.display = 'inline';
+  document.getElementById('editorFinishEditBtn').style.display = 'inline';
+  document.getElementById('editorInfo').textContent = 'Arrastrá los puntos naranjas para editar el contorno';
+  document.getElementById('editorDeleteBtn').disabled = true;
+
+  renderEditorSvg();
+}
+
+function finishVertexEdit() {
+  if (!g_editVertexMode || g_editVertexContourIdx < 0) return;
+
+  // Convert edited points back to pathData
+  const newPathData = pointsToPathData(g_editVertexPoints);
+  g_editSegments[g_editVertexContourIdx].pathData = newPathData;
+  g_editSegments[g_editVertexContourIdx].bounds = getSegBounds(newPathData);
+
+  // Rebuild combined pathData for the layer
+  const combined = g_editSegments.map(s => s.pathData).join('');
+  const layer = currentLayers.find(l => l.index === g_editLayerIndex && l.material === g_editLayerMaterial);
+  if (layer) {
+    layer.pathData = combined;
+    layer.polygonCount = g_editSegments.length;
+  }
+
+  exitVertexEdit();
+  rerenderFromCurrent();
+  toast('Vértices actualizados');
+}
+
+// ═══════════════════════════════════════════════════════
+// WIRE UP CONTROLS
+// ═══════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  // Editor modal
+  document.getElementById('editorClose').addEventListener('click', closeEditor);
+  document.getElementById('editorDeleteBtn').addEventListener('click', deleteSelectedContour);
+  document.getElementById('editorFinishEditBtn').addEventListener('click', finishVertexEdit);
+  // Close editor on backdrop click
+  document.getElementById('editorModal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('editorModal')) closeEditor();
+  });
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (document.getElementById('editorModal').classList.contains('open')) {
+        if (g_editVertexMode) { exitVertexEdit(); }
+        else { closeEditor(); }
+      }
+    }
+    // Track Ctrl key state
+    if (e.key === 'Control') g_ctrlHeld = true;
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'Control') g_ctrlHeld = false;
+  });
+  // SVG Import
+  document.getElementById('importSvgBtn').addEventListener('click', () => {
+    document.getElementById('importSvgInput').click();
+  });
+  document.getElementById('importSvgInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      importSvgFromString(ev.target.result);
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset so same file can be re-imported
+  });
+});
 
 // ═══════════════════════════════════════════════════════
 // STROKE WIDTH & FILL CONTROLS
