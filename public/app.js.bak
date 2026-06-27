@@ -931,18 +931,16 @@ function buildLayerConfigUI() {
     row.className = 'layer-config-row';
     row.dataset.layer = l;
 
-    // Visibility eye button
-    const visBtn = document.createElement('button');
-    visBtn.className = 'lc-vis-btn';
-    visBtn.innerHTML = cfg.visible !== false ? '👁' : '👁‍🗨';
-    visBtn.title = cfg.visible !== false ? 'Ocultar capa' : 'Mostrar capa';
-    visBtn.addEventListener('click', () => {
-      layerConfig[l].visible = !layerConfig[l].visible;
-      visBtn.innerHTML = layerConfig[l].visible ? '👁' : '👁‍🗨';
-      visBtn.title = layerConfig[l].visible ? 'Ocultar capa' : 'Mostrar capa';
-      row.classList.toggle('lc-hidden', !layerConfig[l].visible);
+    // Visibility checkbox
+    const visCb = document.createElement('input');
+    visCb.type = 'checkbox';
+    visCb.className = 'lc-vis';
+    visCb.checked = cfg.visible !== false;
+    visCb.addEventListener('change', () => {
+      layerConfig[l].visible = visCb.checked;
+      row.classList.toggle('lc-hidden', !visCb.checked);
       if (state.viewMode === 'layers' && threeReady) {
-        requestAnimationFrame(() => rebuildTerrain());
+        requestAnimationFrame(() => updateLayerColorsFromConfig());
       }
     });
 
@@ -978,7 +976,7 @@ function buildLayerConfigUI() {
     numLabel.className = 'lc-num';
     numLabel.textContent = l;
 
-    row.appendChild(visBtn);
+    row.appendChild(visCb);
     row.appendChild(numLabel);
     row.appendChild(swatch);
     row.appendChild(nameInput);

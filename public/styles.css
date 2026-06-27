@@ -122,7 +122,7 @@
   .layer-config-list { display:flex; flex-direction:column; gap:3px; }
   .layer-config-row { display:flex; align-items:center; gap:5px; padding:3px 4px; border-radius:4px; background:var(--surface2); }
   .layer-config-row.lc-hidden { opacity:0.4; }
-  .layer-config-row .lc-vis { width:14px; height:14px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
+  .layer-config-row .lc-vis-btn { background:none; border:1px solid var(--border); border-radius:4px; cursor:pointer; font-size:11px; padding:1px 4px; line-height:1; flex-shrink:0; color:var(--text); transition:0.15s; }
   .layer-config-row .lc-num { font-size:9px; font-weight:700; color:var(--text2); min-width:16px; text-align:center; }
   .layer-config-row .lc-swatch { width:20px; height:20px; border-radius:4px; border:1px solid var(--border); cursor:pointer; position:relative; flex-shrink:0; overflow:hidden; }
   .layer-config-row .lc-swatch input[type="color"] { position:absolute; inset:-4px; opacity:0; cursor:pointer; width:calc(100% + 8px); height:calc(100% + 8px); border:none; padding:0; }

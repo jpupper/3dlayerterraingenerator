@@ -104,6 +104,10 @@
       <input type="checkbox" id="fillToggle">
       <span class="control-label">Relleno</span>
     </div>
+    <div class="control-group">
+      <input type="checkbox" id="showEmptyToggle">
+      <span class="control-label">Mostrar vacías</span>
+    </div>
   </div>
 
   <div class="body" id="body">
@@ -379,10 +383,69 @@ function pathsToSvgPolygons(paths) {
   return d;
 }
 
+// Extract non-hole path segments: inner boundaries (contained within another segment)
+// are excluded from the stroke path. Disconnected islands (not inside any other path)
+// ARE included — they get proper strokes just like the main landmass.
+function getNonHolePaths(pathData) {
+  if (!pathData) return '';
+  // Split into individual M...Z segments
+  const segs = pathData.split('M').filter(s => s.trim());
+  if (segs.length <= 1) return pathData;
+  
+  // Parse each segment into polygon coordinates
+  const polygons = segs.map(seg => {
+    const pts = seg.split('Z')[0].trim().split('L');
+    return pts.map(pt => {
+      const parts = pt.split(',');
+      return { x: parseFloat(parts[0]), y: parseFloat(parts[1]) };
+    }).filter(p => !isNaN(p.x));
+  });
+  
+  // Ray-casting point-in-polygon test
+  function pointInPolygon(px, py, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j].x, yj = poly[j].y;
+      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+  
+  const keep = [];
+  for (let i = 0; i < polygons.length; i++) {
+    if (polygons[i].length < 3) continue;
+    // Centroid of the polygon
+    let cx = 0, cy = 0;
+    for (const p of polygons[i]) { cx += p.x; cy += p.y; }
+    cx /= polygons[i].length;
+    cy /= polygons[i].length;
+    
+    let isHole = false;
+    for (let j = 0; j < polygons.length; j++) {
+      if (i === j) continue;
+      // Hole check: this path is inside another path that has more points
+      // (outer boundary has more points than inner boundaries)
+      if (polygons[j].length <= polygons[i].length) continue;
+      if (pointInPolygon(cx, cy, polygons[j])) {
+        isHole = true;
+        break;
+      }
+    }
+    
+    if (!isHole) keep.push(i);
+  }
+  
+  if (keep.length === 0) return 'M' + segs[0].trim();
+  return keep.map(i => 'M' + segs[i].trim()).join('');
+}
+
 // ═══════════════════════════════════════════════════════
 // GENERATE ALL LAYERS
 // ═══════════════════════════════════════════════════════
-function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap, matId) {
+function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap, matId, merged) {
   const layers = [];
   for (let l = 1; l <= numLayers; l++) {
     const lo = (l - 1) / numLayers;
@@ -396,10 +459,12 @@ function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap
         let v = heightData[idx];
         if (materialMap && matId !== undefined) {
           if (materialMap[idx] !== matId) {
-            v = 0; // Non-matching cells treated as background
+            // merged=true: keep other-material cells in grid (no holes in contour)
+            // merged=false: zero them out (isolate this material's cells)
+            if (!merged) v = 0;
           }
         }
-        const inBand = v > 0.001 && (l === numLayers ? (v >= lo) : (v >= lo && v < hi));
+        const inBand = v > 0.001 && v >= lo;
         grid[y][x] = inBand ? 1 : 0;
       }
     }
@@ -478,6 +543,7 @@ let g_layerConfig = {}; // {index: {name, color}} from editor
 let g_materialMap = null; // Uint8Array of material IDs per vertex
 let g_materials = null; // [{id, name, color}]
 let g_numLayers = 15;
+let g_showEmptyLayers = false; // hide empty layers by default
 
 function renderLayers(layers, terrainWidth, terrainDepth) {
   currentLayers = layers;
@@ -500,7 +566,9 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
   const viewBox = `${-mgn} ${-mgn} ${terrainWidth + 2*mgn} ${terrainDepth + 2*mgn}`;
 
   const hueStep = 360 / Math.max(layers.length, 1);
-  for (const layer of layers) {
+  // Filter out empty layers unless showEmpty is on
+  const displayLayers = g_showEmptyLayers ? layers : layers.filter(l => !l.empty);
+  for (const layer of displayLayers) {
     const card = document.createElement('div');
     card.className = 'layer-card';
 
@@ -549,14 +617,19 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
         ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
         : '';
       svgContent = '<rect width="100%" height="100%" fill="#0e0e14"/>' +
-        '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="0.5" opacity="0.9"' + scaleStr + '/>';
+        (layer.material === 0
+          ? '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+            '<path d="' + getNonHolePaths(layer.pathData) + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>'
+          : '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>');
     }
     body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent + '</svg>';
     card.appendChild(body);
     layerGrid.appendChild(card);
   }
 
-  statusInfo.textContent = layers.length + ' capas vectorizadas';
+  const emptyCount = layers.filter(l => l.empty).length;
+  const activeCount = layers.length - emptyCount;
+  statusInfo.textContent = (g_showEmptyLayers ? layers.length : activeCount) + ' capas mostradas · ' + emptyCount + ' vacías ocultas';
   hideLoading();
   // Setup overlay
   setupOverlayToggles();
@@ -582,7 +655,10 @@ function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, 
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
   const svgPath = empty ? '' :
-    '<path d="' + pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="0.5" opacity="0.9"' + scaleStr + '/>';
+    (material === 0
+      ? '<path d="' + pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+        '<path d="' + getNonHolePaths(pathData) + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>'
+      : '<path d="' + pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>');
   const txt = empty ?
     '<text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Vacía</text>' : '';
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="800" height="' + (800 * (terrainDepth + 2*mgn) / (terrainWidth + 2*mgn)) + '">' +
@@ -684,17 +760,11 @@ function updateOverlay() {
   const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
-  let paths = '';
-  for (const layer of currentLayers) {
-    const key = layer.index + '_' + layer.material;
-    if (layer.empty || overlayLayerStates[key] === false) continue;
-    const color = getOverlayColor(layer, overlayMode);
-    paths += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="0.3" opacity="0.85"' + scaleStr + '/>';
-  }
+
   overlaySvg.setAttribute('viewBox', vb);
   let content = '<rect width="100%" height="100%" fill="#0e0e14"/>';
 
-  // When in material mode, also render a water overlay from materialMap
+  // 1) Water mask from materialMap (always bottom-most)
   if (overlayMode === 'material' && g_materialMap && g_materials) {
     const waterMat = g_materials.find(m => m.id === 1);
     if (waterMat && overlayLayerStates['water'] !== false) {
@@ -709,12 +779,33 @@ function updateOverlay() {
       const waterPathData = pathsToSvgPolygons(waterPaths);
       if (waterPathData) {
         const waterColor = waterMat.color || '#4a9eff';
-        content += '<path d="' + waterPathData + '" fill="' + waterColor + '" stroke="' + waterColor + '" stroke-width="0.5" opacity="0.5"' + scaleStr + '/>';
+        content += '<path d="' + waterPathData + '" fill="' + waterColor + '" stroke="' + waterColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.5" fill-rule="evenodd"' + scaleStr + '/>';
       }
     }
   }
 
-  content += paths;
+  // 2) Agua layer paths (material=1) rendered BEFORE tierra so tierra stays on top
+  let pathsAgua = '';
+  for (const layer of currentLayers) {
+    if (layer.material !== 1) continue;
+    const key = layer.index + '_' + layer.material;
+    if (layer.empty || overlayLayerStates[key] === false) continue;
+    const color = getOverlayColor(layer, overlayMode);
+    pathsAgua += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+  }
+  content += pathsAgua;
+
+  // 3) Tierra layer paths (material=0) - stroke only in overlay; agua fill shows through below
+  let pathsTierra = '';
+  for (const layer of currentLayers) {
+    if (layer.material !== 0) continue;
+    const key = layer.index + '_' + layer.material;
+    if (layer.empty || overlayLayerStates[key] === false) continue;
+    const color = getOverlayColor(layer, overlayMode);
+    pathsTierra += '<path d="' + getNonHolePaths(layer.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>';
+  }
+  content += pathsTierra;
+
   overlaySvg.innerHTML = content;
 }
 
@@ -807,6 +898,10 @@ function rerenderFromCurrent() {
 
 strokeWidthRange.addEventListener('input', rerenderFromCurrent);
 fillToggle.addEventListener('change', rerenderFromCurrent);
+document.getElementById('showEmptyToggle').addEventListener('change', function() {
+  g_showEmptyLayers = this.checked;
+  renderLayers(currentLayers, terrainWidth, terrainDepth);
+});
 
 // ═══════════════════════════════════════════════════════
 // TERRAIN DATA PROCESSING
@@ -915,13 +1010,14 @@ function processTerrainData(data) {
   // Generate layers
   let allLayers = [];
   
-  // Tierra layers (material 0)
-  const tierraLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 0);
+  // Tierra layers (material 0) - merged=true: all cells included so contour produces
+  // a SINGLE outer boundary with NO internal water traces
+  const tierraLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 0, true);
   allLayers = allLayers.concat(tierraLayers);
   
   // Agua layers (material 1) if present
   if (g_materialMap && g_materialMap.some(v => v === 1)) {
-    const aguaLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 1);
+    const aguaLayers = generateAllLayers(smoothed, RES, numLayers, terrainWidth, terrainDepth, g_materialMap, 1, false);
     allLayers = allLayers.concat(aguaLayers);
   }
   

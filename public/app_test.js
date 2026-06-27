@@ -47,13 +47,16 @@ const state = {
 // Indexed by layer number (1..N). Built dynamically in initLayerConfig().
 let layerConfig = {};
 
-// New multi-layer heightmap system
-// layerHeights[l] = Float32Array(RES*RES) for layer index l (0 = bottom layer)
-// totalHeightData = computed sum of all layerHeights for rendering
-let layerHeights = null; // Array of Float32Array, one per layer
+// Layer mask system
+// layerMasks[l] = Uint8Array(RES*RES) for layer l (0=bottom), 1=terrain, 0=hole
+// layerMaterials[l] = Uint8Array(RES*RES), 0=Tierra, 1=Agua
+let layerMasks = null;
+let layerMaterials = null;
 let activeLayer = 1;     // 1-indexed, matches layerConfig keys (default: layer 1)
 // Temporary buffer for computed total height
 let totalHeightData = null;
+// Layer thickness in normalized 0..1 height space
+let layerThickness = 0;
 
 // Material-based painting system
 // Each vertex can be painted with a material (Tierra=0, Agua=1, etc.)
@@ -931,18 +934,16 @@ function buildLayerConfigUI() {
     row.className = 'layer-config-row';
     row.dataset.layer = l;
 
-    // Visibility eye button
-    const visBtn = document.createElement('button');
-    visBtn.className = 'lc-vis-btn';
-    visBtn.innerHTML = cfg.visible !== false ? '👁' : '👁‍🗨';
-    visBtn.title = cfg.visible !== false ? 'Ocultar capa' : 'Mostrar capa';
-    visBtn.addEventListener('click', () => {
-      layerConfig[l].visible = !layerConfig[l].visible;
-      visBtn.innerHTML = layerConfig[l].visible ? '👁' : '👁‍🗨';
-      visBtn.title = layerConfig[l].visible ? 'Ocultar capa' : 'Mostrar capa';
-      row.classList.toggle('lc-hidden', !layerConfig[l].visible);
+    // Visibility checkbox
+    const visCb = document.createElement('input');
+    visCb.type = 'checkbox';
+    visCb.className = 'lc-vis';
+    visCb.checked = cfg.visible !== false;
+    visCb.addEventListener('change', () => {
+      layerConfig[l].visible = visCb.checked;
+      row.classList.toggle('lc-hidden', !visCb.checked);
       if (state.viewMode === 'layers' && threeReady) {
-        requestAnimationFrame(() => rebuildTerrain());
+        requestAnimationFrame(() => updateLayerColorsFromConfig());
       }
     });
 
@@ -978,7 +979,7 @@ function buildLayerConfigUI() {
     numLabel.className = 'lc-num';
     numLabel.textContent = l;
 
-    row.appendChild(visBtn);
+    row.appendChild(visCb);
     row.appendChild(numLabel);
     row.appendChild(swatch);
     row.appendChild(nameInput);

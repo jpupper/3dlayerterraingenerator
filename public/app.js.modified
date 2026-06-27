@@ -3,6 +3,13 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
+// Global error handler for debugging
+window.__hermesErrors = [];
+window.addEventListener('error', e => { window.__hermesErrors.push({msg:e.message,file:e.filename,line:e.lineno,col:e.colno}); });
+window.addEventListener('unhandledrejection', e => { window.__hermesErrors.push({msg:'Promise: '+e.reason}); });
+
+console.log('HERMES: app.js loaded, starting init...');
+
 // ═══════════════════════════════════════════════════════
 // TERRAIN LIBRARY
 // ═══════════════════════════════════════════════════════
@@ -47,13 +54,16 @@ const state = {
 // Indexed by layer number (1..N). Built dynamically in initLayerConfig().
 let layerConfig = {};
 
-// New multi-layer heightmap system
-// layerHeights[l] = Float32Array(RES*RES) for layer index l (0 = bottom layer)
-// totalHeightData = computed sum of all layerHeights for rendering
-let layerHeights = null; // Array of Float32Array, one per layer
+// Layer mask system
+// layerMasks[l] = Uint8Array(RES*RES) for layer l (0=bottom), 1=terrain, 0=hole
+// layerMaterials[l] = Uint8Array(RES*RES), 0=Tierra, 1=Agua
+let layerMasks = null;
+let layerMaterials = null;
 let activeLayer = 1;     // 1-indexed, matches layerConfig keys (default: layer 1)
 // Temporary buffer for computed total height
 let totalHeightData = null;
+// Layer thickness in normalized 0..1 height space
+let layerThickness = 0;
 
 // Material-based painting system
 // Each vertex can be painted with a material (Tierra=0, Agua=1, etc.)
@@ -215,6 +225,7 @@ function loadTerrain(id) {
       }
       hideLoading();
       needsRegen = true;
+      initLayerMasks(state.layers);
       drawCanvas();
       if (threeReady) rebuildTerrain();
       toast('Terreno "' + t.name + '" cargado');
@@ -318,6 +329,7 @@ function genDefaultTerrain() {
     if (d < 0.8) heightData[y*RES+x] = Math.min(1, heightData[y*RES+x] + (1-d/0.8)*0.35);
   }
   baseHeightData.set(heightData);
+  initLayerMasks(state.layers);
   needsRegen = true; drawCanvas();
   if (threeReady) rebuildTerrain();
   toast('Default terrain loaded');
@@ -327,8 +339,9 @@ function reallocateData(newRes) {
   if (newRes === RES) return;
   const oldRes = RES;
   const oldData = new Float32Array(heightData);
-  // Save old layerHeights if they exist
-  const oldLayerHeights = layerHeights ? layerHeights.map(lh => new Float32Array(lh)) : null;
+  // Save old layerMasks if they exist
+  const oldLayerMasks = layerMasks ? layerMasks.map(lm => new Uint8Array(lm)) : null;
+  const oldLayerMaterials = layerMaterials ? layerMaterials.map(lm => new Uint8Array(lm)) : null;
   RES = newRes;
   state.resolution = RES;
   $('#resolution').value = RES;
@@ -349,25 +362,26 @@ function reallocateData(newRes) {
   }
   baseHeightData.set(heightData);
   
-  // Resample each layer's heightmap
-  if (oldLayerHeights) {
-    layerHeights = [];
-    for (let l = 0; l < oldLayerHeights.length; l++) {
-      const oldLh = oldLayerHeights[l];
-      const newLh = new Float32Array(RES * RES);
+  // Resample each layer's mask (nearest-neighbor for binary data)
+  if (oldLayerMasks) {
+    layerMasks = [];
+    layerMaterials = [];
+    for (let l = 0; l < oldLayerMasks.length; l++) {
+      const oldMask = oldLayerMasks[l];
+      const oldMat = oldLayerMaterials[l] || new Uint8Array(oldRes * oldRes);
+      const newMask = new Uint8Array(RES * RES);
+      const newMat = new Uint8Array(RES * RES);
       for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
-        const ox = (x / (RES-1)) * (oldRes-1);
-        const oy = (y / (RES-1)) * (oldRes-1);
-        const ix = Math.min(Math.floor(ox), oldRes-2);
-        const iy = Math.min(Math.floor(oy), oldRes-2);
-        const fx = ox - ix, fy = oy - iy;
-        const a = oldLh[iy*oldRes+ix], b = oldLh[iy*oldRes+(ix+1)];
-        const c = oldLh[(iy+1)*oldRes+ix], d = oldLh[(iy+1)*oldRes+(ix+1)];
-        newLh[y*RES+x] = a*(1-fx)*(1-fy) + b*fx*(1-fy) + c*(1-fx)*fy + d*fx*fy;
+        const ox = Math.round((x / (RES-1)) * (oldRes-1));
+        const oy = Math.round((y / (RES-1)) * (oldRes-1));
+        const oi = Math.min(oy, oldRes-1) * oldRes + Math.min(ox, oldRes-1);
+        newMask[y*RES+x] = oldMask[oi];
+        newMat[y*RES+x] = oldMat[oi];
       }
-      layerHeights[l] = newLh;
+      layerMasks[l] = newMask;
+      layerMaterials[l] = newMat;
     }
-    computeTotalHeight();
+    computeHeightsFromMasks();
   }
 }
 
@@ -431,30 +445,34 @@ function paintAt(cx, cy) {
     const dist = Math.sqrt(dx*dx+dy*dy);
     if (dist > radius) continue;
     const f = 1 - dist/radius;
-    // In layers mode, modify the active layer's heightmap only
-    if (state.viewMode === 'layers' && layerHeights && layerHeights.length > 0) {
-      const li = Math.max(0, Math.min(layerHeights.length - 1, activeLayer - 1));
-      const cur = layerHeights[li][py*RES+px];
+    // Modify the active layer's mask
+    if (layerMasks && layerMasks.length > 0) {
+      const li = Math.max(0, Math.min(layerMasks.length - 1, activeLayer - 1));
       // Safety guard: floodfill is handled separately, never via brush
       if (state.tool === 'floodfill') continue;
       if (state.tool === 'add') {
-        const newH = Math.min(1, cur + f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
-        layerHeights[li][py*RES+px] = newH;
+        // Subir: set mask=1 with flow/strength probability
+        if (Math.random() < flow * (0.3 + Math.abs(state.brushStrength) * 0.7)) {
+          layerMasks[li][py*RES+px] = 1;
+        }
       }
       else if (state.tool === 'sub') {
-        const newH = Math.max(0, cur - f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
-        layerHeights[li][py*RES+px] = newH;
+        // Bajar: set mask=0 with flow/strength probability
+        if (Math.random() < flow * (0.3 + Math.abs(state.brushStrength) * 0.7)) {
+          layerMasks[li][py*RES+px] = 0;
+        }
       }
       else if (state.tool === 'smooth') {
-        // Flatten toward reference height (captured on mousedown)
-        if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
-          const amount = f * flow * (0.05 + Math.abs(state.brushStrength) * 0.20);
-          if (cur < smoothRefHeight) {
-            layerHeights[li][py*RES+px] = Math.min(smoothRefHeight, cur + amount);
-          } else {
-            layerHeights[li][py*RES+px] = Math.max(smoothRefHeight, cur - amount);
-          }
+        // Suavizar: dilate/erode mask based on neighbors
+        let count = 0, total = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = px+dx, ny = py+dy;
+          if (nx>=0 && nx<RES && ny>=0 && ny<RES) { total++; if (layerMasks[li][ny*RES+nx]) count++; }
         }
+        const cur = layerMasks[li][py*RES+px];
+        const threshold = 0.5; // if >50% neighbors, fill; if <50%, clear
+        if (cur === 0 && count > total * 0.6) layerMasks[li][py*RES+px] = 1;
+        else if (cur === 1 && count < total * 0.4) layerMasks[li][py*RES+px] = 0;
       }
     } else {
     const cur = heightData[py*RES+px];
@@ -462,11 +480,11 @@ function paintAt(cx, cy) {
     if (state.tool === 'floodfill') continue;
     if (state.tool === 'add') {
       const newH = Math.min(1, cur + f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
-      heightData[py*RES+px] = clampToVisibleLayers(py*RES+px, newH, cur);
+      heightData[py*RES+px] = newH;
     }
     else if (state.tool === 'sub') {
       const newH = Math.max(0, cur - f*flow*(0.05 + Math.abs(state.brushStrength)*0.20));
-      heightData[py*RES+px] = clampToVisibleLayers(py*RES+px, newH, cur);
+      heightData[py*RES+px] = newH;
     }
     else if (state.tool === 'smooth') {
       // Flatten toward reference height (captured on mousedown)
@@ -474,20 +492,19 @@ function paintAt(cx, cy) {
         const amount = f * flow * (0.05 + Math.abs(state.brushStrength) * 0.20);
         if (cur < smoothRefHeight) {
           const newH = Math.min(smoothRefHeight, cur + amount);
-          heightData[py*RES+px] = clampToVisibleLayers(py*RES+px, newH, cur);
+          heightData[py*RES+px] = newH;
         } else {
           const newH = Math.max(smoothRefHeight, cur - amount);
-          heightData[py*RES+px] = clampToVisibleLayers(py*RES+px, newH, cur);
+          heightData[py*RES+px] = newH;
         }
       }
     }
     }
   }
   needsRegen = true;
-  // Sync total height after painting
-  if (state.viewMode === 'layers' && layerHeights) {
-    computeTotalHeight();
-    heightData.set(totalHeightData);
+  // Sync total height from masks
+  if (layerMasks && layerMasks.length > 0) {
+    computeHeightsFromMasks();
   }
 }
 
@@ -546,6 +563,7 @@ function loadFile(file) {
     img.onload = () => {
       loadImageToData(img, heightData);
       baseHeightData.set(heightData);
+      initLayerMasks(state.layers);
       state.activeTerrain = 'custom';
       buildTerrainLibrary();
       drawCanvas();
@@ -790,88 +808,88 @@ function animate() {
 // ═══════════════════════════════════════════════════════
 
 // Layer config management
-function getLayerIndexForHeight(v, numLayers) {
-  if (v <= 0.001) return 0; // background
-  return Math.min(Math.ceil(v * numLayers), numLayers);
+// Find which layer a cell belongs to (topmost layer with mask=1)
+function getLayerForCell(idx) {
+  if (!layerMasks) return 0;
+  for (let l = layerMasks.length - 1; l >= 0; l--) {
+    if (layerMasks[l][idx] === 1) return l + 1; // 1-indexed for layerConfig
+  }
+  return 0; // background/no layer
 }
 
-// Initialize per-layer heightmaps
-function initLayerHeights(numLayers) {
-  if (!layerHeights) {
-    layerHeights = [];
-    const totalH = new Float32Array(RES * RES);
-    let totalEmpty = true;
+// Initialize layer masks from height data
+function initLayerMasks(numLayers) {
+  const N = numLayers;
+  layerThickness = 1 / N;
+  
+  if (!layerMasks || layerMasks.length !== N) {
+    layerMasks = [];
+    layerMaterials = [];
+    
+    // Check if we have existing height data to migrate
+    let hasHeight = false;
     for (let i = 0; i < RES * RES; i++) {
-      if (heightData[i] > 0.001) { totalEmpty = false; break; }
+      if (heightData[i] > 0.001) { hasHeight = true; break; }
     }
-    if (totalEmpty) {
-      // Brand new terrain — all zeros, all layers empty
-      for (let l = 0; l < numLayers; l++) {
-        layerHeights[l] = new Float32Array(RES * RES);
-      }
-    } else {
-      // Legacy preset: distribute heightData into layers by quantized bucket
-      // Layer 0 gets the base contribution (up to 1/N), layer 1 gets (1/N to 2/N), etc.
-      distributeHeightToLayers(numLayers);
+    
+    for (let l = 0; l < N; l++) {
+      layerMasks[l] = new Uint8Array(RES * RES);
+      layerMaterials[l] = new Uint8Array(RES * RES);
     }
-  } else if (layerHeights.length !== numLayers) {
-    // Resize: preserve existing layers, add/remove as needed
-    const oldLen = layerHeights.length;
-    if (numLayers > oldLen) {
-      for (let l = oldLen; l < numLayers; l++) {
-        layerHeights[l] = new Float32Array(RES * RES);
+    
+    if (hasHeight) {
+      // Migrate: convert continuous height to binary masks
+      for (let i = 0; i < RES * RES; i++) {
+        const h = heightData[i];
+        if (h <= 0.001) continue;
+        const numFilled = Math.min(N, Math.max(1, Math.round(h / layerThickness)));
+        for (let l = 0; l < numFilled; l++) {
+          layerMasks[l][i] = 1;
+          layerMaterials[l][i] = materialMap ? materialMap[i] : 0;
+        }
       }
-    } else if (numLayers < oldLen) {
-      layerHeights.length = numLayers;
+    }
+    // else: brand new — all masks stay 0
+  } else if (layerMasks.length !== N) {
+    // Resize: preserve existing masks, add/remove
+    const oldLen = layerMasks.length;
+    if (N > oldLen) {
+      for (let l = oldLen; l < N; l++) {
+        layerMasks[l] = new Uint8Array(RES * RES);
+        layerMaterials[l] = new Uint8Array(RES * RES);
+      }
+    } else if (N < oldLen) {
+      layerMasks.length = N;
+      layerMaterials.length = N;
     }
   }
-  // Ensure totalHeightData exists
+  
   if (!totalHeightData || totalHeightData.length !== RES * RES) {
     totalHeightData = new Float32Array(RES * RES);
   }
-  computeTotalHeight();
+  computeHeightsFromMasks();
 }
 
-// Distribute a single heightmap across multiple layers
-// For backward compatibility: ALL height goes into layer 0 (bottom layer)
-// Higher layers start empty — user can build up with Subir on each layer
-function distributeHeightToLayers(numLayers) {
-  const N = numLayers;
-  layerHeights = [];
-  // Layer 0 gets the full heightmap
-  layerHeights[0] = new Float32Array(RES * RES);
-  let maxH = 0;
-  for (let i = 0; i < RES * RES; i++) {
-    const v = heightData[i];
-    layerHeights[0][i] = v;
-    if (v > maxH) maxH = v;
-  }
-  // Normalize layer 0 so max is 1.0 (our per-layer 0..1 scale)
-  if (maxH > 0.001) {
-    for (let i = 0; i < RES * RES; i++) {
-      layerHeights[0][i] /= maxH;
-    }
-  }
-  // Remaining layers start empty
-  for (let l = 1; l < N; l++) {
-    layerHeights[l] = new Float32Array(RES * RES);
-  }
-}
-
-// Compute total height from all layer heights
-function computeTotalHeight() {
-  if (!layerHeights || layerHeights.length === 0) return;
+// Compute total height from layer masks
+function computeHeightsFromMasks() {
+  if (!layerMasks || layerMasks.length === 0) return;
   totalHeightData.fill(0);
-  for (let l = 0; l < layerHeights.length; l++) {
-    const lh = layerHeights[l];
+  const N = layerMasks.length;
+  const th = 1 / N;
+  for (let l = 0; l < N; l++) {
+    const mask = layerMasks[l];
     for (let i = 0; i < RES * RES; i++) {
-      totalHeightData[i] += lh[i];
+      if (mask[i]) totalHeightData[i] += th;
     }
   }
+  heightData.set(totalHeightData);
+  baseHeightData.set(totalHeightData);
+  // Sync material colors from topmost layer materials
+  if (materialMap) syncMaterialMapFromLayers();
 }
 function initLayerConfig(numLayers) {
-  // Also initialize layerHeights if needed
-  initLayerHeights(numLayers);
+  // Also initialize layerMasks if needed
+  initLayerMasks(numLayers);
   
   const defaultColors = [
     '#4a9eff', '#6db36d', '#c4a265', '#d4915a', '#b87333',
@@ -958,7 +976,7 @@ function buildLayerConfigUI() {
       swatch.style.background = cp.value;
       layerConfig[l].color = cp.value;
       if (state.viewMode === 'layers' && threeReady) {
-        requestAnimationFrame(() => updateLayerColorsFromConfig());
+        requestAnimationFrame(() => rebuildTerrain());
       }
     });
     swatch.appendChild(cp);
@@ -992,13 +1010,9 @@ function applyLayerColorsToColorData() {
   if (!colorData || colorData.length !== RES * RES * 3) {
     colorData = new Float32Array(RES * RES * 3);
   }
-  const N = state.layers;
   const c = new THREE.Color();
   for (let i = 0; i < RES * RES; i++) {
-    const z = Math.floor(i / RES);
-    const x = i % RES;
-    const v = baseHeightData[z * RES + x];
-    const li = getLayerIndexForHeight(v, N);
+    const li = getLayerForCell(i);
     if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
       colorData[i*3] = 0; colorData[i*3+1] = 0; colorData[i*3+2] = 0;
     } else {
@@ -1015,28 +1029,25 @@ function applyLayerColorsToColorData() {
 
 function updateLayerColorsFromConfig(skipMeshUpdate) {
   if (!terrainMesh || state.viewMode !== 'layers') return;
-  const N = state.layers;
-  const geo = terrainMesh.geometry;
-  const pos = geo.getAttribute('position');
-  const colors = new Float32Array(pos.count * 3);
-  const c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const z = Math.floor(i / RES);
-    const x = i % RES;
-    const v = baseHeightData[z * RES + x];
-    const li = getLayerIndexForHeight(v, N);
-    if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
-      colors[i*3] = 0; colors[i*3+1] = 0; colors[i*3+2] = 0; // hidden/invisible
-    } else {
-      c.set(layerConfig[li].color);
-      colors[i*3] = c.r; colors[i*3+1] = c.g; colors[i*3+2] = c.b;
+  // In the new mask system, each layer mesh has its own color
+  // This function is no longer needed for single-mesh layers mode
+  // but we keep it for backward compatibility: update each layer mesh's color
+  for (const mesh of layerMeshes) {
+    const li = mesh.userData.layerIndex;
+    const layerNum = li + 1;
+    const cfg = layerConfig[layerNum];
+    if (cfg) {
+      const color = new THREE.Color(cfg.color);
+      const colors = new Float32Array(RES * RES * 3);
+      for (let i = 0; i < RES * RES; i++) {
+        colors[i*3] = color.r;
+        colors[i*3+1] = color.g;
+        colors[i*3+2] = color.b;
+      }
+      const geo = mesh.geometry;
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geo.attributes.color.needsUpdate = true;
     }
-  }
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.attributes.color.needsUpdate = true;
-  // Also update mesh vertices to flatten hidden layers (skip if called from within updateMeshVertices)
-  if (!skipMeshUpdate) {
-    updateMeshVertices(true, true);
   }
 }
 
@@ -1085,6 +1096,22 @@ function syncColorDataFromMaterials() {
   }
 }
 
+// Sync materialMap from topmost layer's materials (for non-layers rendering)
+function syncMaterialMapFromLayers() {
+  if (!layerMasks || !layerMaterials || !materialMap) return;
+  materialMap.fill(0);
+  for (let i = 0; i < RES * RES; i++) {
+    // Find topmost layer with mask=1
+    for (let l = layerMasks.length - 1; l >= 0; l--) {
+      if (layerMasks[l][i]) {
+        materialMap[i] = layerMaterials[l][i];
+        break;
+      }
+    }
+  }
+  syncColorDataFromMaterials();
+}
+
 function paintMaterialAt(gx, gz, matId) {
   const size = state.brushSize, flow = state.brushFlow / 100;
   const radius = size / 2;
@@ -1103,29 +1130,30 @@ function paintMaterialAt(gx, gz, matId) {
   if (changed) syncColorDataFromMaterials();
 }
 
-// Flood-fill: paint the ENTIRE connected component at the clicked cell's height layer
-// with the given material. Only affects cells at the same quantized height level
+// Flood-fill: paint the connected component on the ACTIVE LAYER
+// with the given material. Only affects cells within the active layer's mask
 // that are 4-directionally connected.
 function floodFillMaterial(gx, gz, matId) {
-  if (!materialMap) return;
-  const N = state.layers;
-  const targetH = baseHeightData[gz * RES + gx];
-  if (targetH <= 0.001) return; // background, nothing to flood
+  if (!layerMasks || layerMasks.length === 0) return;
+  const li = Math.max(0, Math.min(layerMasks.length - 1, activeLayer - 1));
+  const mask = layerMasks[li];
+  const matArr = layerMaterials[li];
   
-  const qh = Math.ceil(targetH * N) / N;
+  // Check if clicked cell has terrain on this layer
+  if (!mask[gz * RES + gx]) { toast('No hay terreno en esta capa aquí'); return; }
+  
   const visited = new Uint8Array(RES * RES);
   const queue = [[gx, gz]];
   visited[gz * RES + gx] = 1;
   let head = 0;
-  
   const dirs = [[-1,0],[1,0],[0,-1],[0,1]]; // 4-directional
   
   while (head < queue.length) {
     const [cx, cz] = queue[head++];
     const idx = cz * RES + cx;
     
-    // Set material for this cell
-    materialMap[idx] = matId;
+    // Set material for this cell on this layer
+    matArr[idx] = matId;
     
     for (const [dx, dz] of dirs) {
       const nx = cx + dx, nz = cz + dz;
@@ -1133,19 +1161,16 @@ function floodFillMaterial(gx, gz, matId) {
       const nidx = nz * RES + nx;
       if (visited[nidx]) continue;
       
-      // Check if neighbor is at the same quantized height
-      const nh = baseHeightData[nidx];
-      if (nh <= 0.001) continue;
-      const nqh = Math.ceil(nh * N) / N;
-      if (nqh !== qh) continue;
-      
-      visited[nidx] = 1;
-      queue.push([nx, nz]);
+      // Check if neighbor has terrain on THIS layer (same mask)
+      if (mask[nidx]) {
+        visited[nidx] = 1;
+        queue.push([nx, nz]);
+      }
     }
   }
   
-  syncColorDataFromMaterials();
-  toast('Componente pintado como ' + (MATERIALS[matId]?.name || 'material'));
+  syncMaterialMapFromLayers();
+  toast('Capa ' + (li+1) + ' pintada como ' + (MATERIALS[matId]?.name || 'material'));
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1155,10 +1180,17 @@ function floodFillMaterial(gx, gz, matId) {
 function fillTerrainHoles() {
   if (!materialMap) initMaterialMap();
   saveUndoSnapshot();
-  const N = state.layers;
+  if (!layerMasks || layerMasks.length === 0) { toast('No hay capas para rellenar'); return; }
+
+  // Check if cell is empty (no layer has mask=1)
+  function isEmpty(idx) {
+    for (let l = 0; l < layerMasks.length; l++) {
+      if (layerMasks[l][idx]) return false;
+    }
+    return true;
+  }
 
   // Step 1: Flood-fill from ALL grid borders through empty cells
-  // Any empty cell NOT reached is an internal hole (surrounded by terrain)
   const visited = new Uint8Array(RES * RES);
   const queue = [];
   const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
@@ -1167,8 +1199,9 @@ function fillTerrainHoles() {
   for (let y = 0; y < RES; y++) {
     for (let x = 0; x < RES; x++) {
       const isBorder = (y === 0 || y === RES-1 || x === 0 || x === RES-1);
-      if (isBorder && heightData[y * RES + x] <= 0.001 && !visited[y * RES + x]) {
-        visited[y * RES + x] = 1;
+      const idx = y * RES + x;
+      if (isBorder && isEmpty(idx) && !visited[idx]) {
+        visited[idx] = 1;
         queue.push([x, y]);
       }
     }
@@ -1183,34 +1216,26 @@ function fillTerrainHoles() {
       if (nx < 0 || nx >= RES || ny < 0 || ny >= RES) continue;
       const nidx = ny * RES + nx;
       if (visited[nidx]) continue;
-      // Only flood through empty cells (height=0 or background)
-      if (heightData[nidx] <= 0.001) {
+      if (isEmpty(nidx)) {
         visited[nidx] = 1;
         queue.push([nx, ny]);
       }
     }
   }
 
-  // Step 2: Count internal holes (empty cells NOT visited by border flood)
+  // Step 2: Count internal holes
   let internalCount = 0;
   for (let i = 0; i < RES * RES; i++) {
-    if (heightData[i] <= 0.001 && !visited[i]) internalCount++;
+    if (isEmpty(i) && !visited[i]) internalCount++;
   }
   if (internalCount === 0) { toast('No se encontraron huecos internos'); return; }
 
-  // Step 3: Find the minimum terrain height to use as fill value
-  // Scan nearby terrain cells around each hole to determine fill height
-  let minH = 1;
-  for (let i = 0; i < RES * RES; i++) {
-    if (heightData[i] > 0.001) minH = Math.min(minH, heightData[i]);
-  }
-  const layerHeight = Math.max(Math.ceil(minH * N) / N, 1 / N);
-
-  // Step 4: Fill all internal holes
+  // Step 3: Fill all internal holes by adding bottom layer terrain
   let filled = 0;
   for (let i = 0; i < RES * RES; i++) {
-    if (heightData[i] <= 0.001 && !visited[i]) {
-      heightData[i] = layerHeight;
+    if (isEmpty(i) && !visited[i]) {
+      layerMasks[0][i] = 1; // Add to bottom layer
+      layerMaterials[0][i] = materialMap ? materialMap[i] : 0;
       filled++;
     }
   }
@@ -1218,13 +1243,18 @@ function fillTerrainHoles() {
   needsRegen = true;
   drawCanvas();
   if (threeReady) rebuildTerrain();
-  toast(filled + ' huecos internos rellenados a nivel capa base');
+  toast(filled + ' huecos internos rellenados (capa base)');
 }
 
 function rebuildTerrain() {
   if (!threeReady) return;
 
-  // 1. Smooth into baseHeightData
+  // Compute total height from layer masks
+  if (layerMasks && layerMasks.length > 0) {
+    computeHeightsFromMasks();
+  }
+
+  // 1. Smooth into baseHeightData (for display)
   if (state.smoothing > 0) {
     const saved = new Float32Array(heightData);
     smoothHeightmap(state.smoothing);
@@ -1240,11 +1270,6 @@ function rebuildTerrain() {
   // 3. Update canvas
   drawCanvas();
 
-  // 4. Quantize
-  const N = state.layers;
-  const quantized = new Float32Array(RES*RES);
-  for (let i = 0; i < RES*RES; i++) quantized[i] = baseHeightData[i] > 0.001 ? Math.ceil(baseHeightData[i] * N) / N : 0;
-
   // Initialize colorData and materialMap if needed
   if (!materialMap || materialMap.length !== RES*RES) {
     initMaterialMap();
@@ -1254,64 +1279,148 @@ function rebuildTerrain() {
 
   const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight * HEIGHT_SCALE;
   const mScaleX = state.modelScaleX, mScaleZ = state.modelScaleZ;
-  const positions = [], indices = [], colors = [];
 
-  const cr = t => {
-    const c = new THREE.Color();
-    if (state.viewMode === 'heat') {
-      if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
-      else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
-      else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
-      else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
-    } else {
-      // Use vertex colors (painted or base color)
-      const idx = (Math.floor(t * (RES*RES-1)))*3; // fallback - will be overwritten below
-    }
-    return c;
-  };
+  // Remove old terrain
+  if (terrainGroup) {
+    scene.remove(terrainGroup);
+    terrainGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+    terrainGroup = null;
+  }
+  terrainMesh = null;
+  layerMeshes = [];
 
-  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const h = quantized[z*RES+x];
-    positions.push((x/(RES-1)-0.5)*scaleX * mScaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ * mScaleZ);
-    if (state.viewMode === 'heat') {
-      const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
-    } else if (state.viewMode === 'layers') {
-      const v = baseHeightData[z*RES+x];
-      const li = getLayerIndexForHeight(v, state.layers);
-      if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
-        colors.push(0, 0, 0);
-      } else {
-        const col = new THREE.Color(layerConfig[li].color);
-        colors.push(col.r, col.g, col.b);
+  if (state.viewMode === 'layers' && layerMasks && layerMasks.length > 0) {
+    // ── LAYERS MODE: one mesh per visible layer ──
+    const N = layerMasks.length;
+    const th = layerThickness;
+    terrainGroup = new THREE.Group();
+    
+    for (let l = 0; l < N; l++) {
+      const layerNum = l + 1; // 1-indexed for layerConfig
+      if (!layerConfig[layerNum] || layerConfig[layerNum].visible === false) continue;
+      
+      const mask = layerMasks[l];
+      const positions = [], indices = [];
+      const color = new THREE.Color(layerConfig[layerNum].color);
+      
+      // Compute accumulated base count from layers below (muted layers still count)
+      const baseCounts = new Float32Array(RES * RES);
+      for (let bl = 0; bl < l; bl++) {
+        const bm = layerMasks[bl];
+        for (let i = 0; i < RES * RES; i++) {
+          if (bm[i]) baseCounts[i]++;
+        }
       }
-    } else {
-      const idx = (z*RES+x)*3;
-      colors.push(colorData[idx], colorData[idx+1], colorData[idx+2]);
+      
+      // Build positions
+      for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+        const idx = z * RES + x;
+        const baseH = baseCounts[idx] * th;
+        const px = (x / (RES-1) - 0.5) * scaleX * mScaleX;
+        const pz = (z / (RES-1) - 0.5) * scaleZ * mScaleZ;
+        if (mask[idx]) {
+          positions.push(px, (baseH + th) * hScale, pz);
+        } else {
+          positions.push(px, baseH * hScale, pz);
+        }
+      }
+      
+      // Build indices (skip quads where mask is 0 on all 4 corners)
+      for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
+        const a = z*RES+x, b = z*RES+x+1, c = (z+1)*RES+x, d = (z+1)*RES+x+1;
+        if (!mask[a] && !mask[b] && !mask[c] && !mask[d]) continue;
+        indices.push(a,c,b); indices.push(b,c,d);
+      }
+      
+      if (indices.length === 0) continue;
+      
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      
+      // Vertex colors for this layer (solid color)
+      const colors = new Float32Array(RES * RES * 3);
+      for (let i = 0; i < RES * RES; i++) {
+        colors[i*3] = color.r;
+        colors[i*3+1] = color.g;
+        colors[i*3+2] = color.b;
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.6,
+        metalness: 0.05,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.layerIndex = l;
+      terrainGroup.add(mesh);
+      layerMeshes.push(mesh);
+      terrainMesh = mesh; // For raycasting: use last visible layer
     }
+    
+    if (terrainGroup.children.length > 0) {
+      scene.add(terrainGroup);
+    }
+    
+  } else {
+    // ── NON-LAYERS MODE: single mesh (solid, heat, wire) ──
+    const positions = [], indices = [], colors = [];
+    
+    for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+      const idx = z * RES + x;
+      const h = baseHeightData[idx];
+      positions.push(
+        (x/(RES-1)-0.5)*scaleX * mScaleX,
+        h * hScale,
+        (z/(RES-1)-0.5)*scaleZ * mScaleZ
+      );
+      if (state.viewMode === 'heat') {
+        const c = new THREE.Color();
+        const t = h;
+        if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
+        else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
+        else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
+        else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
+        colors.push(c.r, c.g, c.b);
+      } else {
+        const ci = idx * 3;
+        colors.push(colorData[ci], colorData[ci+1], colorData[ci+2]);
+      }
+    }
+    
+    for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
+      const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
+      if (!state.showBase && baseHeightData[a] <= 0.001 && baseHeightData[b] <= 0.001 && baseHeightData[c] <= 0.001 && baseHeightData[d] <= 0.001) continue;
+      indices.push(a,c,b); indices.push(b,c,d);
+    }
+    
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    
+    let mat;
+    if (state.viewMode === 'wire') {
+      mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
+    } else {
+      mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
+    }
+    
+    terrainMesh = new THREE.Mesh(geo, mat);
+    terrainMesh.castShadow = true;
+    terrainMesh.receiveShadow = true;
+    
+    terrainGroup = new THREE.Group();
+    terrainGroup.add(terrainMesh);
+    scene.add(terrainGroup);
   }
 
-  for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
-    const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
-    // Skip quads where all corners are flat (height = 0) — no geometry for black areas
-    if (!state.showBase && quantized[a] === 0 && quantized[b] === 0 && quantized[c] === 0 && quantized[d] === 0) continue;
-    indices.push(a,c,b); indices.push(b,c,d); // CW winding = normals up
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
-
-  let mat;
-  if (state.viewMode === 'wire') mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
-  else mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
-
-  terrainMesh = new THREE.Mesh(geo, mat);
-  terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
   needsRegen = false;
   hideLoading();
 
@@ -1378,6 +1487,11 @@ function saveUndoSnapshot() {
   const snap = { heightData: new Float32Array(heightData) };
   if (colorData) snap.colorData = new Float32Array(colorData);
   if (materialMap) snap.materialMap = new Uint8Array(materialMap);
+  // Save layerMasks if available
+  if (layerMasks && layerMasks.length > 0) {
+    snap.layerMasks = layerMasks.map(lm => new Uint8Array(lm));
+    snap.layerMaterials = layerMaterials.map(lm => new Uint8Array(lm));
+  }
   undoStack.push(snap);
   if (undoStack.length > UNDO_MAX) undoStack.shift();
 }
@@ -1391,6 +1505,14 @@ function undoLastPaint() {
     materialMap.set(snap.materialMap);
     syncColorDataFromMaterials();
   }
+  // Restore layerMasks if present
+  if (snap.layerMasks && layerMasks) {
+    for (let l = 0; l < Math.min(snap.layerMasks.length, layerMasks.length); l++) {
+      layerMasks[l].set(snap.layerMasks[l]);
+      layerMaterials[l].set(snap.layerMaterials[l]);
+    }
+    computeHeightsFromMasks();
+  }
   baseHeightData.set(heightData);
   needsRegen = true;
   drawCanvas();
@@ -1403,8 +1525,9 @@ function get3dGridPos(event) {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  if (!terrainMesh) return null;
-  const intersects = raycaster.intersectObject(terrainMesh);
+  if (!terrainGroup || terrainGroup.children.length === 0) return null;
+  // intersect recursively through the group to hit child meshes
+  const intersects = raycaster.intersectObject(terrainGroup, true);
   if (intersects.length === 0) return null;
   const pt = intersects[0].point;
   const sX = state.sizeX, sZ = state.sizeZ;
@@ -1415,93 +1538,55 @@ function get3dGridPos(event) {
   return {x: gx, z: gz};
 }
 
-// Clamp height to remain in visible layer range (Capas mode only)
-// Allows cells to move INTO visible layers from hidden layers, but prevents
-// cells from settling into hidden layers.
-function clampToVisibleLayers(idx, newHeight, oldHeight) {
-  if (state.viewMode !== 'layers' || newHeight <= 0.001) return newHeight;
-  if (oldHeight === undefined) oldHeight = heightData[idx];
-  const N = state.layers;
-  const newLayer = Math.min(Math.ceil(newHeight * N), N);
 
-  // If new height is in a visible layer, no clamping needed
-  if (!layerConfig[newLayer] || layerConfig[newLayer].visible !== false) return newHeight;
-
-  // New height is in a hidden layer - find nearest visible layer to clamp to
-  const layerBottom = (newLayer - 1) / N;
-  const layerTop = newLayer / N;
-
-  // Check adjacent layers for visibility
-  let clampTarget = null;
-  // Layer below this hidden layer is visible → clamp just above its bottom (= just below this hidden layer)
-  if (newLayer > 1 && layerConfig[newLayer - 1] && layerConfig[newLayer - 1].visible !== false) {
-    clampTarget = layerBottom - 0.0001; // just inside the visible layer below
-  }
-  // Layer above this hidden layer is visible → clamp just below its top (= just above this hidden layer)
-  if (newLayer < N && layerConfig[newLayer + 1] && layerConfig[newLayer + 1].visible !== false) {
-    const aboveClamp = layerTop + 0.0001; // just inside the visible layer above
-    if (clampTarget === null || Math.abs(newHeight - aboveClamp) < Math.abs(newHeight - clampTarget)) {
-      clampTarget = aboveClamp;
-    }
-  }
-
-  // If no visible layer adjacent, scan all layers
-  if (clampTarget === null) {
-    let bestDist = Infinity;
-    for (let l = 1; l <= N; l++) {
-      if (layerConfig[l] && layerConfig[l].visible !== false) {
-        const lBottom = (l - 1) / N;
-        const lTop = l / N;
-        // Cell is above this visible layer → clamp to Top - epsilon (inside visible layer)
-        if (newHeight >= lTop) {
-          const d = newHeight - lTop;
-          if (d < bestDist) { bestDist = d; clampTarget = lTop - 0.0001; }
-        }
-        // Cell is below this visible layer → clamp to Bottom + epsilon (inside visible layer)
-        if (newHeight <= lBottom) {
-          const d = lBottom - newHeight;
-          if (d < bestDist) { bestDist = d; clampTarget = lBottom + 0.0001; }
-        }
-      }
-    }
-  }
-
-  if (clampTarget !== null) {
-    return Math.max(0, Math.min(1, clampTarget));
-  }
-  return newHeight;
-}
-
-function paint3dAt(gx, gz) {
   const size = state.brushSize, flow = state.brushFlow / 100;
   const radius = size / 2;
   const ceilRad = Math.ceil(radius);
   // Safety guard: floodfill is handled separately in mousedown, never via brush
   if (state.tool === 'floodfill') return;
-  // Safety guard: color has its own handler, never via brush elevation
+  
+  const useMasks = layerMasks && layerMasks.length > 0;
+  const li = useMasks ? Math.max(0, Math.min(layerMasks.length - 1, activeLayer - 1)) : -1;
+  
   for (let dz = -ceilRad; dz <= ceilRad; dz++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = gx+dx, pz = gz+dz;
     if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
     const dist = Math.sqrt(dx*dx+dz*dz);
     if (dist > radius) continue;
     const f = 1 - dist/radius;
+    
+    if (useMasks) {
+      if (state.tool === 'add') {
+        if (Math.random() < f * flow * (0.3 + Math.abs(state.brushStrength) * 0.7)) {
+          layerMasks[li][pz*RES+px] = 1;
+        }
+      } else if (state.tool === 'sub') {
+        if (Math.random() < f * flow * (0.3 + Math.abs(state.brushStrength) * 0.7)) {
+          layerMasks[li][pz*RES+px] = 0;
+        }
+      } else if (state.tool === 'smooth') {
+        let count = 0, total = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = px+dx, ny = pz+dy;
+          if (nx>=0 && nx<RES && ny>=0 && ny<RES) { total++; if (layerMasks[li][ny*RES+nx]) count++; }
+        }
+        const cur = layerMasks[li][pz*RES+px];
+        if (cur === 0 && count > total * 0.6) layerMasks[li][pz*RES+px] = 1;
+        else if (cur === 1 && count < total * 0.4) layerMasks[li][pz*RES+px] = 0;
+      }
+      // 'color' tool does nothing in layers mode — material is set via fill
+    } else {
     const cur = heightData[pz*RES+px];
     if (state.tool === 'smooth') {
-      // Flatten toward reference height (captured on mousedown)
       if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
-        // In layers mode, only modify cells in VISIBLE layers (smooth shouldn't cross layers)
-        if (state.viewMode === 'layers' && cur > 0.001) {
-          const curLayer = Math.min(Math.ceil(cur * state.layers), state.layers);
-          if (layerConfig[curLayer] && layerConfig[curLayer].visible === false) continue;
-        }
         const rate = Math.abs(state.brushStrength);
         const amount = f * flow * (0.05 + rate * 0.20);
         if (cur < smoothRefHeight) {
           const newH = Math.min(smoothRefHeight, cur + amount);
-          heightData[pz*RES+px] = clampToVisibleLayers(pz*RES+px, newH, cur);
+          heightData[pz*RES+px] = newH;
         } else {
           const newH = Math.max(smoothRefHeight, cur - amount);
-          heightData[pz*RES+px] = clampToVisibleLayers(pz*RES+px, newH, cur);
+          heightData[pz*RES+px] = newH;
         }
       }
     }
@@ -1514,19 +1599,68 @@ function paint3dAt(gx, gz) {
       colorData[idx+2] = colorData[idx+2] * (1-alpha) + col.b * alpha;
     }
     else {
-      // Elevation: direction from active button (add=subir, sub=bajar)
       const dir = state.tool === 'add' ? 1 : -1;
       const rate = Math.abs(state.brushStrength);
       const amount = f * flow * (0.05 + rate * 0.20);
-      // Modify ALL cells. clampToVisibleLayers ensures result stays in visible layers.
       const newH = Math.max(0, Math.min(1, cur + dir * amount));
-      heightData[pz*RES+px] = clampToVisibleLayers(pz*RES+px, newH, cur);
+      heightData[pz*RES+px] = newH;
+    }
     }
   }
   needsRegen = true;
+  if (useMasks) {
+    computeHeightsFromMasks();
+  }
 }
 
 function updateMeshVertices(smooth, updateNormals) {
+  if (!terrainGroup) return;
+  
+  // In layers mode, update just the active layer's mesh for performance
+  if (state.viewMode === 'layers' && layerMasks && layerMasks.length > 0) {
+    const li = Math.max(0, Math.min(layerMasks.length - 1, activeLayer - 1));
+    // Find the mesh for this layer
+    const mesh = layerMeshes.find(m => m.userData.layerIndex === li);
+    if (!mesh) { rebuildTerrain(); return; }
+    
+    const hScale = state.maxHeight * HEIGHT_SCALE;
+    const scaleX = state.sizeX, scaleZ = state.sizeZ;
+    const mScaleX = state.modelScaleX, mScaleZ = state.modelScaleZ;
+    const mask = layerMasks[li];
+    const th = layerThickness;
+    
+    // Compute accumulated base Y from layers below (count of masks below)
+    const baseCounts = new Float32Array(RES * RES);
+    for (let bl = 0; bl < li; bl++) {
+      const bm = layerMasks[bl];
+      for (let i = 0; i < RES * RES; i++) {
+        if (bm[i]) baseCounts[i]++;
+      }
+    }
+    
+    const geo = mesh.geometry;
+    const posAttr = geo.getAttribute('position');
+    const arr = posAttr.array;
+    
+    for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+      const idx = z * RES + x;
+      const baseH = baseCounts[idx] * th;
+      const topH = mask[idx] ? th : 0;
+      const px = (x / (RES-1) - 0.5) * scaleX * mScaleX;
+      const pz = (z / (RES-1) - 0.5) * scaleZ * mScaleZ;
+      const vi = idx * 3;
+      arr[vi] = px;
+      arr[vi + 1] = mask[idx] ? (baseH + th) * hScale : baseH * hScale;
+      arr[vi + 2] = pz;
+    }
+    posAttr.needsUpdate = true;
+    if (updateNormals !== false) {
+      geo.computeVertexNormals();
+    }
+    return;
+  }
+  
+  // Non-layers mode: fast vertex update (original logic)
   if (!terrainMesh) return;
   const hScale = state.maxHeight * HEIGHT_SCALE, N = state.layers;
   let src = heightData;
@@ -1558,40 +1692,9 @@ function updateMeshVertices(smooth, updateNormals) {
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
     const idx = z*RES+x;
     let v = baseHeightData[idx];
-    // If in layers view mode, flatten hidden layers so they disappear
-    if (state.viewMode === 'layers' && v > 0.001) {
-      const li = Math.min(Math.ceil(v * N), N);
-      // If hidden layer, scan ALL visible layers and clamp to the nearest boundary
-      if (layerConfig[li] && layerConfig[li].visible === false) {
-        let bestDist = Infinity;
-        let clamped = false;
-        for (let l = 1; l <= N; l++) {
-          if (layerConfig[l] && layerConfig[l].visible !== false) {
-            const lTop = l / N;
-            const lBottom = (l - 1) / N;
-            // Cell is above this visible layer → clamp just below its top
-            if (v >= lTop) {
-              const d = v - lTop;
-              if (d < bestDist) { bestDist = d; v = lTop - 0.0001; clamped = true; }
-            }
-            // Cell is below this visible layer → clamp just above its bottom
-            if (v <= lBottom) {
-              const d = lBottom - v;
-              if (d < bestDist) { bestDist = d; v = lBottom + 0.0001; clamped = true; }
-            }
-          }
-        }
-        if (!clamped) v = 0; // no visible layer found at all
-      }
-    }
-    const h = v > 0.001 ? Math.ceil(v * N) / N : 0;
-    arr[(z*RES+x)*3+1] = h * hScale;
+    arr[(z*RES+x)*3+1] = v * hScale;
   }
   posAttr.needsUpdate = true;
-  // In layers mode, also update vertex colors to reflect layer changes
-  if (state.viewMode === 'layers') {
-    updateLayerColorsFromConfig(true);
-  }
   // Only recompute normals when explicitly requested (avoid GPU issues during paint loop)
   if (updateNormals !== false) {
     terrainMesh.geometry.computeVertexNormals();
@@ -1674,12 +1777,12 @@ function setup3dPaintEvents() {
   });
 
   function updateBrushRing(e) {
-    if (!brushRing || !terrainMesh) return;
+    if (!brushRing || !terrainGroup) return;
     const rect = renderer.domElement.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const py = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(new THREE.Vector2(px, py), camera);
-    const hits = raycaster.intersectObject(terrainMesh);
+    const hits = raycaster.intersectObject(terrainGroup, true);
     if (hits.length > 0) {
       const pt = hits[0].point;
       const mRing = ((state.modelScaleX || 1) + (state.modelScaleZ || 1)) / 2;
@@ -1705,21 +1808,28 @@ function setup3dPaintEvents() {
 // LAYER OUTLINE LINES (for GLB export)
 // ═══════════════════════════════════════════════════════
 function generateLayerOutlineLines() {
-  const N = state.layers;
+  if (!layerMasks || layerMasks.length === 0) return null;
+  const N = layerMasks.length;
   const hScale = state.maxHeight * HEIGHT_SCALE;
   const scaleX = state.sizeX;
   const scaleZ = state.sizeZ;
   const pts = [];
 
-function qh(v) { return v > 0.001 ? Math.ceil(v * N) / N : 0; }
+// Count layers with mask=1 at a cell
+function layerCount(idx) {
+  let c = 0;
+  for (let l = 0; l < N; l++) { if (layerMasks[l][idx]) c++; }
+  return c;
+}
 
   // Horizontal edges (between x and x+1)
   for (let z = 0; z < RES; z++) {
     for (let x = 0; x < RES - 1; x++) {
-      const h1 = qh(baseHeightData[z * RES + x]);
-      const h2 = qh(baseHeightData[z * RES + (x + 1)]);
-      if (h1 !== h2) {
-        const minH = Math.min(h1, h2);
+      const c1 = layerCount(z * RES + x);
+      const c2 = layerCount(z * RES + (x + 1));
+      if (c1 !== c2) {
+        const minC = Math.min(c1, c2);
+        const minH = minC * layerThickness;
         const px1 = (x / (RES - 1) - 0.5) * scaleX;
         const px2 = ((x + 1) / (RES - 1) - 0.5) * scaleX;
         const pz = (z / (RES - 1) - 0.5) * scaleZ;
@@ -1731,10 +1841,11 @@ function qh(v) { return v > 0.001 ? Math.ceil(v * N) / N : 0; }
   // Vertical edges (between z and z+1)
   for (let z = 0; z < RES - 1; z++) {
     for (let x = 0; x < RES; x++) {
-      const h1 = qh(baseHeightData[z * RES + x]);
-      const h2 = qh(baseHeightData[(z + 1) * RES + x]);
-      if (h1 !== h2) {
-        const minH = Math.min(h1, h2);
+      const c1 = layerCount(z * RES + x);
+      const c2 = layerCount((z + 1) * RES + x);
+      if (c1 !== c2) {
+        const minC = Math.min(c1, c2);
+        const minH = minC * layerThickness;
         const px = (x / (RES - 1) - 0.5) * scaleX;
         const pz1 = (z / (RES - 1) - 0.5) * scaleZ;
         const pz2 = ((z + 1) / (RES - 1) - 0.5) * scaleZ;
@@ -1768,71 +1879,52 @@ $('#exportStl').addEventListener('click', () => {
 
 $('#exportSvg').addEventListener('click', () => {
   if (!terrainMesh) { toast('Primero generá el terreno'); return; }
-  const N = state.layers, W=800, H=800;
+  if (!layerMasks || layerMasks.length === 0) { toast('No hay capas para exportar'); return; }
+  const N = layerMasks.length, W=800, H=800;
   const allParts = [];
 
-  // Marching squares for one material's height data
-  function generateMaterialSvgParts(matId, matName, matColor, labelPrefix) {
+  // Marching squares for a binary mask (0 or 1 values)
+  function generateMaskSvgParts(layerIdx, matColor, labelPrefix) {
     const parts = [];
-    // Create filtered height: only cells with this material keep height, others = 0
-    const filtered = new Float32Array(RES * RES);
-    for (let i = 0; i < RES * RES; i++) {
-      if (materialMap && materialMap[i] === matId) {
-        filtered[i] = baseHeightData[i];
-      } else {
-        filtered[i] = 0;
+    const mask = layerMasks[layerIdx];
+    const matArr = layerMaterials ? layerMaterials[layerIdx] : null;
+    const segs = [];
+    
+    // Marching squares at threshold 0.5 (binary mask)
+    for (let z=0;z<RES-1;z++) for (let x=0;x<RES-1;x++) {
+      const v00=mask[z*RES+x]?1:0, v10=mask[z*RES+(x+1)]?1:0, v01=mask[(z+1)*RES+x]?1:0, v11=mask[(z+1)*RES+(x+1)]?1:0;
+      const bits=(v00*8)|(v10*4)|(v01*2)|v11;
+      if (bits===0||bits===15) continue;
+      const xf=g=>((g/(RES-1))-0.5)*W*0.85+W/2, yf=g=>((g/(RES-1))-0.5)*H*0.85+H/2;
+      const cx=xf(x), nx=xf(x+1), cy=yf(z), ny=yf(z+1);
+      const ec={1:[[3,2]],2:[[1,0]],3:[[3,1]],4:[[0,2]],5:[[0,2],[3,1]],6:[[0,0]],7:[[1,2]],8:[[0,1]],9:[[0,1]],10:[[1,3],[0,2]],11:[[1,2]],12:[[3,0]],13:[[1,3]],14:[[3,0]]};
+      const es=ec[bits]; if (!es) continue;
+      // For binary masks, edge intersection is always at 0.5 (midpoint)
+      for (const [e1,e2] of es) {
+        const p1 = e1===0?[(cx+nx)/2,cy]:e1===1?[nx,(cy+ny)/2]:e1===2?[(cx+nx)/2,ny]:[cx,(cy+ny)/2];
+        const p2 = e2===0?[(cx+nx)/2,cy]:e2===1?[nx,(cy+ny)/2]:e2===2?[(cx+nx)/2,ny]:[cx,(cy+ny)/2];
+        segs.push({x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1]});
       }
     }
-
-    for (let l=1; l<=N; l++) {
-      // Capa 1: contorno exterior, capas 2+: borde inferior
-      const th = l === 1 ? 0.001 : (l - 1) / N;
-      const segs = [];
-      for (let z=0;z<RES-1;z++) for (let x=0;x<RES-1;x++) {
-        const v00=filtered[z*RES+x], v10=filtered[z*RES+(x+1)], v01=filtered[(z+1)*RES+x], v11=filtered[(z+1)*RES+(x+1)];
-        const bits=(v00>=th?8:0)|(v10>=th?4:0)|(v01>=th?2:0)|(v11>=th?1:0);
-        if (bits===0||bits===15) continue;
-        const xf=g=>((g/(RES-1))-0.5)*W*0.85+W/2, yf=g=>((g/(RES-1))-0.5)*H*0.85+H/2;
-        const cx=xf(x), nx=xf(x+1), cy=yf(z), ny=yf(z+1);
-        const ip=(a,b,t)=>a+(b-a)*t;
-        const ei=e=>{switch(e){case 0:return[ip(cx,nx,(th-v00)/(v10-v00)),cy];case 1:return[nx,ip(cy,ny,(th-v10)/(v11-v10))];case 2:return[ip(cx,nx,(th-v01)/(v11-v01)),ny];case 3:return[cx,ip(cy,ny,(th-v00)/(v01-v00))];default:return[0,0];}};
-        const ec={1:[[3,2]],2:[[1,0]],3:[[3,1]],4:[[0,2]],5:[[0,2],[3,1]],6:[[0,0]],7:[[1,2]],8:[[0,1]],9:[[0,1]],10:[[1,3],[0,2]],11:[[1,2]],12:[[3,0]],13:[[1,3]],14:[[3,0]]};
-        const es=ec[bits]; if (!es) continue;
-        for (const [e1,e2] of es) { const [x1,y1]=ei(e1),[x2,y2]=ei(e2); segs.push({x1,y1,x2,y2}); }
-      }
-      if (segs.length===0) continue;
-      let d = ''; for (const s of segs) d += `M${s.x1.toFixed(1)},${s.y1.toFixed(1)}L${s.x2.toFixed(1)},${s.y2.toFixed(1)}`;
-      // Color: vary lightness based on layer within the material's hue
-      // Extract hue from the material color
-      const tmpC = new THREE.Color(matColor);
-      const hsl = {};
-      tmpC.getHSL(hsl);
-      const hueDeg = Math.round(hsl.h * 360);
-      const lightness = 25 + (l / N) * 45;
-      const cl = `hsl(${hueDeg},65%,${lightness}%)`;
-      const layerName = labelPrefix + ' ' + l;
-      parts.push(`<path d="${d}" fill="none" stroke="${cl}" stroke-width="1.5" opacity="0.7"/><text x="20" y="${30+l*20}" font-size="10" fill="${cl}" font-family="sans-serif">${layerName}</text>`);
-    }
+    
+    if (segs.length===0) return parts;
+    let d = ''; for (const s of segs) d += `M${s.x1.toFixed(1)},${s.y1.toFixed(1)}L${s.x2.toFixed(1)},${s.y2.toFixed(1)}`;
+    const layerName = labelPrefix + ' ' + (layerIdx+1);
+    parts.push(`<path d="${d}" fill="none" stroke="${matColor}" stroke-width="1.5" opacity="0.8"/><text x="20" y="${30+(layerIdx+1)*20}" font-size="10" fill="${matColor}" font-family="sans-serif">${layerName}</text>`);
     return parts;
   }
 
-  // Generate tierra layers (material 0)
-  const tierraColor = (MATERIALS[0] && MATERIALS[0].color) || '#c4a265';
-  const tierraParts = generateMaterialSvgParts(0, 'Tierra', tierraColor, 'Capa Tierra');
-  allParts.push(...tierraParts);
-
-  // Generate agua layers (material 1) if present
-  if (materialMap && materialMap.some(v => v === 1)) {
-    const aguaColor = (MATERIALS[1] && MATERIALS[1].color) || '#4a9eff';
-    const aguaParts = generateMaterialSvgParts(1, 'Agua', aguaColor, 'Capa Agua');
-    // Offset agua legend below tierra legend
-    for (let i = 0; i < aguaParts.length; i++) {
-      aguaParts[i] = aguaParts[i].replace(/y="(\d+)"/, (m, y) => 'y="' + (parseInt(y) + N * 20 + 10) + '"');
-    }
-    allParts.push(...aguaParts);
+  // Generate per-layer SVG paths (colored by layer config color)
+  for (let l = 0; l < N; l++) {
+    const hasTerrain = layerMasks[l].some(v => v === 1);
+    if (!hasTerrain) continue;
+    const layerNum = l + 1;
+    const cfg = layerConfig[layerNum] || { color: '#888' };
+    const parts = generateMaskSvgParts(l, cfg.color, 'Capa');
+    allParts.push(...parts);
   }
 
-  if (allParts.length===0) { toast('No hay suficientes capas'); return; }
+  if (allParts.length===0) { toast('No hay capas con terreno'); return; }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#0e0e14"/>${allParts.join('\\n')}</svg>`;
   const b = new Blob([svg], {type:'image/svg+xml'}); const u=URL.createObjectURL(b);
   const a = document.createElement('a'); a.href=u; a.download=`terrain_capas.svg`; a.click(); URL.revokeObjectURL(u);
@@ -2156,7 +2248,15 @@ function updateMeshColors() {
 }
 
 $('#applyBtn').addEventListener('click', () => { setLoading('Aplicando cambios...'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
-$('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
+$('#resetHeightBtn').addEventListener('click', () => { 
+  heightData.fill(0); baseHeightData.fill(0); 
+  // Also reset layerMasks
+  if (layerMasks) {
+    for (let l = 0; l < layerMasks.length; l++) { layerMasks[l].fill(0); layerMaterials[l].fill(0); }
+    computeHeightsFromMasks();
+  }
+  needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); 
+});
 $('#fillHolesBtn').addEventListener('click', () => fillTerrainHoles());
 
 $('#refreshLightBtn').addEventListener('click', () => {
@@ -2294,6 +2394,7 @@ function getStateSnapshot() {
     paintColor: state.paintColor,
     paintAlpha: state.paintAlpha,
     showBase: state.showBase,
+    activeLayer: state.activeLayer,
     layerConfig: layerConfig,
     materialColors: MATERIALS.map(m => m.color),
   };
@@ -2336,6 +2437,7 @@ function applyStateSnapshot(params) {
   if (params.paintColor !== undefined) { state.paintColor = params.paintColor; $('#paintColorPicker').value = params.paintColor; }
   if (params.paintAlpha !== undefined) { state.paintAlpha = params.paintAlpha; $('#paintAlpha').value = params.paintAlpha; $('#paintAlphaVal').textContent = params.paintAlpha.toFixed(2); }
   if (params.showBase !== undefined) { state.showBase = params.showBase; var sb = $('#showBaseBtn'); if(sb) sb.innerHTML = state.showBase ? '🧱 Base visible' : '🧱 Base oculta'; }
+  if (params.activeLayer !== undefined) { state.activeLayer = params.activeLayer; activeLayer = params.activeLayer; }
   // Restore layer config if present
   if (params.layerConfig) {
     layerConfig = {};
@@ -2387,6 +2489,8 @@ async function savePreset() {
     heightData: compactFloats(heightData, 6),
     colorData: colorData ? compactFloats(colorData, 4) : null,
     materialMap: materialMap ? Array.from(materialMap) : null,
+    layerMasks: layerMasks ? layerMasks.map(lm => Array.from(lm)) : null,
+    layerMaterials: layerMaterials ? layerMaterials.map(lm => Array.from(lm)) : null,
     resolution: RES,
     thumbnail: null,
   };
@@ -2465,8 +2569,20 @@ async function loadPreset(id) {
         $('#resolutionVal').textContent = data.params.resolution;
       }
       heightData.set(new Float32Array(data.heightData));
-      baseHeightData.set(heightData);
-    }
+        baseHeightData.set(heightData);
+        // Restore layerMasks from saved preset (new format)
+        if (data.layerMasks && Array.isArray(data.layerMasks)) {
+          layerMasks = data.layerMasks.map(arr => new Uint8Array(arr));
+          layerMaterials = (data.layerMaterials && Array.isArray(data.layerMaterials))
+            ? data.layerMaterials.map(arr => new Uint8Array(arr))
+            : layerMasks.map(() => new Uint8Array(RES*RES));
+          layerThickness = 1 / state.layers;
+          computeHeightsFromMasks();
+        } else {
+          // Legacy preset: migrate heightData to binary masks
+          initLayerMasks(state.layers);
+        }
+      }
     if (data.colorData) {
       colorData = new Float32Array(data.colorData);
     }
@@ -2540,6 +2656,8 @@ async function updatePreset(id) {
       heightData: compactFloats(heightData, 6),
       colorData: colorData ? compactFloats(colorData, 4) : null,
       materialMap: materialMap ? Array.from(materialMap) : null,
+      layerMasks: layerMasks ? layerMasks.map(lm => Array.from(lm)) : null,
+      layerMaterials: layerMaterials ? layerMaterials.map(lm => Array.from(lm)) : null,
       resolution: RES,
       thumbnail: null,
     };

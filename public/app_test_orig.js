@@ -215,6 +215,7 @@ function loadTerrain(id) {
       }
       hideLoading();
       needsRegen = true;
+      initLayerHeights(state.layers);
       drawCanvas();
       if (threeReady) rebuildTerrain();
       toast('Terreno "' + t.name + '" cargado');
@@ -318,6 +319,7 @@ function genDefaultTerrain() {
     if (d < 0.8) heightData[y*RES+x] = Math.min(1, heightData[y*RES+x] + (1-d/0.8)*0.35);
   }
   baseHeightData.set(heightData);
+  initLayerHeights(state.layers);
   needsRegen = true; drawCanvas();
   if (threeReady) rebuildTerrain();
   toast('Default terrain loaded');
@@ -546,6 +548,7 @@ function loadFile(file) {
     img.onload = () => {
       loadImageToData(img, heightData);
       baseHeightData.set(heightData);
+      initLayerHeights(state.layers);
       state.activeTerrain = 'custom';
       buildTerrainLibrary();
       drawCanvas();
@@ -931,16 +934,14 @@ function buildLayerConfigUI() {
     row.className = 'layer-config-row';
     row.dataset.layer = l;
 
-    // Visibility eye button
-    const visBtn = document.createElement('button');
-    visBtn.className = 'lc-vis-btn';
-    visBtn.innerHTML = cfg.visible !== false ? '👁' : '👁‍🗨';
-    visBtn.title = cfg.visible !== false ? 'Ocultar capa' : 'Mostrar capa';
-    visBtn.addEventListener('click', () => {
-      layerConfig[l].visible = !layerConfig[l].visible;
-      visBtn.innerHTML = layerConfig[l].visible ? '👁' : '👁‍🗨';
-      visBtn.title = layerConfig[l].visible ? 'Ocultar capa' : 'Mostrar capa';
-      row.classList.toggle('lc-hidden', !layerConfig[l].visible);
+    // Visibility checkbox
+    const visCb = document.createElement('input');
+    visCb.type = 'checkbox';
+    visCb.className = 'lc-vis';
+    visCb.checked = cfg.visible !== false;
+    visCb.addEventListener('change', () => {
+      layerConfig[l].visible = visCb.checked;
+      row.classList.toggle('lc-hidden', !visCb.checked);
       if (state.viewMode === 'layers' && threeReady) {
         requestAnimationFrame(() => rebuildTerrain());
       }
@@ -958,7 +959,7 @@ function buildLayerConfigUI() {
       swatch.style.background = cp.value;
       layerConfig[l].color = cp.value;
       if (state.viewMode === 'layers' && threeReady) {
-        requestAnimationFrame(() => updateLayerColorsFromConfig());
+        requestAnimationFrame(() => rebuildTerrain());
       }
     });
     swatch.appendChild(cp);
@@ -978,7 +979,7 @@ function buildLayerConfigUI() {
     numLabel.className = 'lc-num';
     numLabel.textContent = l;
 
-    row.appendChild(visBtn);
+    row.appendChild(visCb);
     row.appendChild(numLabel);
     row.appendChild(swatch);
     row.appendChild(nameInput);
@@ -1224,6 +1225,12 @@ function fillTerrainHoles() {
 function rebuildTerrain() {
   if (!threeReady) return;
 
+  // Compute total height from all layers
+  if (layerHeights && layerHeights.length > 0) {
+    computeTotalHeight();
+    heightData.set(totalHeightData);
+  }
+
   // 1. Smooth into baseHeightData
   if (state.smoothing > 0) {
     const saved = new Float32Array(heightData);
@@ -1240,11 +1247,6 @@ function rebuildTerrain() {
   // 3. Update canvas
   drawCanvas();
 
-  // 4. Quantize
-  const N = state.layers;
-  const quantized = new Float32Array(RES*RES);
-  for (let i = 0; i < RES*RES; i++) quantized[i] = baseHeightData[i] > 0.001 ? Math.ceil(baseHeightData[i] * N) / N : 0;
-
   // Initialize colorData and materialMap if needed
   if (!materialMap || materialMap.length !== RES*RES) {
     initMaterialMap();
@@ -1254,64 +1256,151 @@ function rebuildTerrain() {
 
   const scaleX = state.sizeX, scaleZ = state.sizeZ, hScale = state.maxHeight * HEIGHT_SCALE;
   const mScaleX = state.modelScaleX, mScaleZ = state.modelScaleZ;
-  const positions = [], indices = [], colors = [];
 
-  const cr = t => {
-    const c = new THREE.Color();
-    if (state.viewMode === 'heat') {
-      if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
-      else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
-      else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
-      else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
-    } else {
-      // Use vertex colors (painted or base color)
-      const idx = (Math.floor(t * (RES*RES-1)))*3; // fallback - will be overwritten below
-    }
-    return c;
-  };
+  // Remove old terrain
+  if (terrainGroup) {
+    scene.remove(terrainGroup);
+    terrainGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+    terrainGroup = null;
+  }
+  terrainMesh = null;
+  layerMeshes = [];
 
-  for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
-    const h = quantized[z*RES+x];
-    positions.push((x/(RES-1)-0.5)*scaleX * mScaleX, h*hScale, (z/(RES-1)-0.5)*scaleZ * mScaleZ);
-    if (state.viewMode === 'heat') {
-      const col = cr(baseHeightData[z*RES+x]); colors.push(col.r, col.g, col.b);
-    } else if (state.viewMode === 'layers') {
-      const v = baseHeightData[z*RES+x];
-      const li = getLayerIndexForHeight(v, state.layers);
-      if (li === 0 || !layerConfig[li] || layerConfig[li].visible === false) {
-        colors.push(0, 0, 0);
-      } else {
-        const col = new THREE.Color(layerConfig[li].color);
-        colors.push(col.r, col.g, col.b);
+  if (state.viewMode === 'layers' && layerHeights && layerHeights.length > 0) {
+    // ── LAYERS MODE: one mesh per visible layer ──
+    const N = layerHeights.length;
+    terrainGroup = new THREE.Group();
+    
+    for (let l = 0; l < N; l++) {
+      const layerNum = l + 1; // 1-indexed for layerConfig
+      if (!layerConfig[layerNum] || layerConfig[layerNum].visible === false) continue;
+      
+      const lh = layerHeights[l];
+      const positions = [], indices = [];
+      const color = new THREE.Color(layerConfig[layerNum].color);
+      
+      // Compute accumulated base Y from layers below (Option B: muted layers still count)
+      const baseYArr = new Float32Array(RES * RES);
+      for (let bl = 0; bl < l; bl++) {
+        const blh = layerHeights[bl];
+        for (let i = 0; i < RES * RES; i++) {
+          baseYArr[i] += blh[i];
+        }
       }
-    } else {
-      const idx = (z*RES+x)*3;
-      colors.push(colorData[idx], colorData[idx+1], colorData[idx+2]);
+      
+      // Build positions
+      for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+        const idx = z * RES + x;
+        const layerH = lh[idx];
+        const baseH = baseYArr[idx];
+        const totalH = baseH + layerH;
+        const px = (x / (RES-1) - 0.5) * scaleX * mScaleX;
+        const pz = (z / (RES-1) - 0.5) * scaleZ * mScaleZ;
+        if (layerH > 0.001) {
+          positions.push(px, totalH * hScale, pz);
+        } else {
+          // Place vertex at base height (layer below's top) — flat
+          positions.push(px, baseH * hScale, pz);
+        }
+      }
+      
+      // Build indices (skip quads where this layer has 0 height on all 4 corners)
+      for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
+        const a = z*RES+x, b = z*RES+x+1, c = (z+1)*RES+x, d = (z+1)*RES+x+1;
+        if (lh[a] <= 0.001 && lh[b] <= 0.001 && lh[c] <= 0.001 && lh[d] <= 0.001) continue;
+        indices.push(a,c,b); indices.push(b,c,d);
+      }
+      
+      if (indices.length === 0) continue;
+      
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      
+      // Vertex colors for this layer
+      const colors = new Float32Array(RES * RES * 3);
+      for (let i = 0; i < RES * RES; i++) {
+        colors[i*3] = color.r;
+        colors[i*3+1] = color.g;
+        colors[i*3+2] = color.b;
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.6,
+        metalness: 0.05,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.layerIndex = l;
+      terrainGroup.add(mesh);
+      layerMeshes.push(mesh);
+      terrainMesh = mesh; // For raycasting: use last visible layer
     }
+    
+    if (terrainGroup.children.length > 0) {
+      scene.add(terrainGroup);
+    }
+    
+  } else {
+    // ── NON-LAYERS MODE: single mesh (solid, heat, wire) ──
+    const positions = [], indices = [], colors = [];
+    
+    for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+      const idx = z * RES + x;
+      const h = baseHeightData[idx];
+      const ph = h > 0.001 ? Math.ceil(h * state.layers) / state.layers : 0;
+      positions.push(
+        (x/(RES-1)-0.5)*scaleX * mScaleX,
+        ph * hScale,
+        (z/(RES-1)-0.5)*scaleZ * mScaleZ
+      );
+      if (state.viewMode === 'heat') {
+        const c = new THREE.Color();
+        const t = h;
+        if (t<0.25) c.setHSL(0.65-t*1.0, 0.9, 0.3+t*0.5);
+        else if (t<0.5) c.setHSL(0.50-(t-0.25)*0.8, 0.85, 0.45+(t-0.25)*0.3);
+        else if (t<0.75) c.setHSL(0.25-(t-0.5)*0.6, 0.8, 0.55+(t-0.5)*0.25);
+        else c.setHSL(0.08-(t-0.75)*0.2, 0.9, 0.6+(t-0.75)*0.3);
+        colors.push(c.r, c.g, c.b);
+      } else {
+        const ci = idx * 3;
+        colors.push(colorData[ci], colorData[ci+1], colorData[ci+2]);
+      }
+    }
+    
+    for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
+      const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
+      if (!state.showBase && baseHeightData[a] <= 0.001 && baseHeightData[b] <= 0.001 && baseHeightData[c] <= 0.001 && baseHeightData[d] <= 0.001) continue;
+      indices.push(a,c,b); indices.push(b,c,d);
+    }
+    
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    
+    let mat;
+    if (state.viewMode === 'wire') {
+      mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
+    } else {
+      mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
+    }
+    
+    terrainMesh = new THREE.Mesh(geo, mat);
+    terrainMesh.castShadow = true;
+    terrainMesh.receiveShadow = true;
+    
+    terrainGroup = new THREE.Group();
+    terrainGroup.add(terrainMesh);
+    scene.add(terrainGroup);
   }
 
-  for (let z = 0; z < RES-1; z++) for (let x = 0; x < RES-1; x++) {
-    const a=z*RES+x, b=z*RES+x+1, c=(z+1)*RES+x, d=(z+1)*RES+x+1;
-    // Skip quads where all corners are flat (height = 0) — no geometry for black areas
-    if (!state.showBase && quantized[a] === 0 && quantized[b] === 0 && quantized[c] === 0 && quantized[d] === 0) continue;
-    indices.push(a,c,b); indices.push(b,c,d); // CW winding = normals up
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
-
-  let mat;
-  if (state.viewMode === 'wire') mat = new THREE.MeshStandardMaterial({color:0x8caa80, wireframe:true, roughness:0.7, metalness:0.1});
-  else mat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.6, metalness:0.05, side:THREE.DoubleSide});
-
-  terrainMesh = new THREE.Mesh(geo, mat);
-  terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
   needsRegen = false;
   hideLoading();
 
@@ -1378,6 +1467,10 @@ function saveUndoSnapshot() {
   const snap = { heightData: new Float32Array(heightData) };
   if (colorData) snap.colorData = new Float32Array(colorData);
   if (materialMap) snap.materialMap = new Uint8Array(materialMap);
+  // Save layerHeights if in layers mode
+  if (layerHeights && layerHeights.length > 0) {
+    snap.layerHeights = layerHeights.map(lh => new Float32Array(lh));
+  }
   undoStack.push(snap);
   if (undoStack.length > UNDO_MAX) undoStack.shift();
 }
@@ -1391,6 +1484,14 @@ function undoLastPaint() {
     materialMap.set(snap.materialMap);
     syncColorDataFromMaterials();
   }
+  // Restore layerHeights if present
+  if (snap.layerHeights && layerHeights) {
+    for (let l = 0; l < Math.min(snap.layerHeights.length, layerHeights.length); l++) {
+      layerHeights[l].set(snap.layerHeights[l]);
+    }
+    computeTotalHeight();
+    heightData.set(totalHeightData);
+  }
   baseHeightData.set(heightData);
   needsRegen = true;
   drawCanvas();
@@ -1403,8 +1504,9 @@ function get3dGridPos(event) {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  if (!terrainMesh) return null;
-  const intersects = raycaster.intersectObject(terrainMesh);
+  if (!terrainGroup || terrainGroup.children.length === 0) return null;
+  // intersect recursively through the group to hit child meshes
+  const intersects = raycaster.intersectObject(terrainGroup, true);
   if (intersects.length === 0) return null;
   const pt = intersects[0].point;
   const sX = state.sizeX, sZ = state.sizeZ;
@@ -1479,21 +1581,43 @@ function paint3dAt(gx, gz) {
   // Safety guard: floodfill is handled separately in mousedown, never via brush
   if (state.tool === 'floodfill') return;
   // Safety guard: color has its own handler, never via brush elevation
+  // Determine which height data to modify based on view mode
+  const useLayers = state.viewMode === 'layers' && layerHeights && layerHeights.length > 0;
+  const li = useLayers ? Math.max(0, Math.min(layerHeights.length - 1, activeLayer - 1)) : -1;
+  
   for (let dz = -ceilRad; dz <= ceilRad; dz++) for (let dx = -ceilRad; dx <= ceilRad; dx++) {
     const px = gx+dx, pz = gz+dz;
     if (px<0 || px>=RES || pz<0 || pz>=RES) continue;
     const dist = Math.sqrt(dx*dx+dz*dz);
     if (dist > radius) continue;
     const f = 1 - dist/radius;
+    
+    if (useLayers) {
+      const cur = layerHeights[li][pz*RES+px];
+      if (state.tool === 'smooth') {
+        if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
+          const rate = Math.abs(state.brushStrength);
+          const amount = f * flow * (0.05 + rate * 0.20);
+          if (cur < smoothRefHeight) {
+            layerHeights[li][pz*RES+px] = Math.min(smoothRefHeight, cur + amount);
+          } else {
+            layerHeights[li][pz*RES+px] = Math.max(smoothRefHeight, cur - amount);
+          }
+        }
+      } else if (state.tool === 'color') {
+        // Color painting in layers mode: modify the layer's color? For now, skip
+      } else {
+        const dir = state.tool === 'add' ? 1 : -1;
+        const rate = Math.abs(state.brushStrength);
+        const amount = f * flow * (0.05 + rate * 0.20);
+        const newH = Math.max(0, Math.min(1, cur + dir * amount));
+        layerHeights[li][pz*RES+px] = newH;
+      }
+    } else {
     const cur = heightData[pz*RES+px];
     if (state.tool === 'smooth') {
       // Flatten toward reference height (captured on mousedown)
       if (smoothRefHeight >= 0 && cur !== smoothRefHeight) {
-        // In layers mode, only modify cells in VISIBLE layers (smooth shouldn't cross layers)
-        if (state.viewMode === 'layers' && cur > 0.001) {
-          const curLayer = Math.min(Math.ceil(cur * state.layers), state.layers);
-          if (layerConfig[curLayer] && layerConfig[curLayer].visible === false) continue;
-        }
         const rate = Math.abs(state.brushStrength);
         const amount = f * flow * (0.05 + rate * 0.20);
         if (cur < smoothRefHeight) {
@@ -1522,11 +1646,65 @@ function paint3dAt(gx, gz) {
       const newH = Math.max(0, Math.min(1, cur + dir * amount));
       heightData[pz*RES+px] = clampToVisibleLayers(pz*RES+px, newH, cur);
     }
+    }
   }
   needsRegen = true;
+  // Sync total height in layers mode
+  if (useLayers) {
+    computeTotalHeight();
+    heightData.set(totalHeightData);
+  }
 }
 
 function updateMeshVertices(smooth, updateNormals) {
+  if (!terrainGroup) return;
+  
+  // In layers mode, update just the active layer's mesh for performance
+  if (state.viewMode === 'layers' && layerHeights && layerHeights.length > 0) {
+    const li = Math.max(0, Math.min(layerHeights.length - 1, activeLayer - 1));
+    const layerNum = li + 1;
+    // Find the mesh for this layer
+    const mesh = layerMeshes.find(m => m.userData.layerIndex === li);
+    if (!mesh) { rebuildTerrain(); return; }
+    
+    const hScale = state.maxHeight * HEIGHT_SCALE;
+    const scaleX = state.sizeX, scaleZ = state.sizeZ;
+    const mScaleX = state.modelScaleX, mScaleZ = state.modelScaleZ;
+    const lh = layerHeights[li];
+    
+    // Compute accumulated base Y from layers below
+    const baseYArr = new Float32Array(RES * RES);
+    for (let bl = 0; bl < li; bl++) {
+      const blh = layerHeights[bl];
+      for (let i = 0; i < RES * RES; i++) {
+        baseYArr[i] += blh[i];
+      }
+    }
+    
+    const geo = mesh.geometry;
+    const posAttr = geo.getAttribute('position');
+    const arr = posAttr.array;
+    
+    for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
+      const idx = z * RES + x;
+      const layerH = lh[idx];
+      const baseH = baseYArr[idx];
+      const totalH = baseH + layerH;
+      const px = (x / (RES-1) - 0.5) * scaleX * mScaleX;
+      const pz = (z / (RES-1) - 0.5) * scaleZ * mScaleZ;
+      const vi = idx * 3;
+      arr[vi] = px;
+      arr[vi + 1] = layerH > 0.001 ? totalH * hScale : baseH * hScale;
+      arr[vi + 2] = pz;
+    }
+    posAttr.needsUpdate = true;
+    if (updateNormals !== false) {
+      geo.computeVertexNormals();
+    }
+    return;
+  }
+  
+  // Non-layers mode: fast vertex update (original logic)
   if (!terrainMesh) return;
   const hScale = state.maxHeight * HEIGHT_SCALE, N = state.layers;
   let src = heightData;
@@ -1558,40 +1736,10 @@ function updateMeshVertices(smooth, updateNormals) {
   for (let z = 0; z < RES; z++) for (let x = 0; x < RES; x++) {
     const idx = z*RES+x;
     let v = baseHeightData[idx];
-    // If in layers view mode, flatten hidden layers so they disappear
-    if (state.viewMode === 'layers' && v > 0.001) {
-      const li = Math.min(Math.ceil(v * N), N);
-      // If hidden layer, scan ALL visible layers and clamp to the nearest boundary
-      if (layerConfig[li] && layerConfig[li].visible === false) {
-        let bestDist = Infinity;
-        let clamped = false;
-        for (let l = 1; l <= N; l++) {
-          if (layerConfig[l] && layerConfig[l].visible !== false) {
-            const lTop = l / N;
-            const lBottom = (l - 1) / N;
-            // Cell is above this visible layer → clamp just below its top
-            if (v >= lTop) {
-              const d = v - lTop;
-              if (d < bestDist) { bestDist = d; v = lTop - 0.0001; clamped = true; }
-            }
-            // Cell is below this visible layer → clamp just above its bottom
-            if (v <= lBottom) {
-              const d = lBottom - v;
-              if (d < bestDist) { bestDist = d; v = lBottom + 0.0001; clamped = true; }
-            }
-          }
-        }
-        if (!clamped) v = 0; // no visible layer found at all
-      }
-    }
     const h = v > 0.001 ? Math.ceil(v * N) / N : 0;
     arr[(z*RES+x)*3+1] = h * hScale;
   }
   posAttr.needsUpdate = true;
-  // In layers mode, also update vertex colors to reflect layer changes
-  if (state.viewMode === 'layers') {
-    updateLayerColorsFromConfig(true);
-  }
   // Only recompute normals when explicitly requested (avoid GPU issues during paint loop)
   if (updateNormals !== false) {
     terrainMesh.geometry.computeVertexNormals();
@@ -1674,12 +1822,12 @@ function setup3dPaintEvents() {
   });
 
   function updateBrushRing(e) {
-    if (!brushRing || !terrainMesh) return;
+    if (!brushRing || !terrainGroup) return;
     const rect = renderer.domElement.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const py = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(new THREE.Vector2(px, py), camera);
-    const hits = raycaster.intersectObject(terrainMesh);
+    const hits = raycaster.intersectObject(terrainGroup, true);
     if (hits.length > 0) {
       const pt = hits[0].point;
       const mRing = ((state.modelScaleX || 1) + (state.modelScaleZ || 1)) / 2;
@@ -2156,7 +2304,15 @@ function updateMeshColors() {
 }
 
 $('#applyBtn').addEventListener('click', () => { setLoading('Aplicando cambios...'); requestAnimationFrame(() => rebuildTerrain()); toast('Terreno actualizado'); });
-$('#resetHeightBtn').addEventListener('click', () => { heightData.fill(0); baseHeightData.fill(0); needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); });
+$('#resetHeightBtn').addEventListener('click', () => { 
+  heightData.fill(0); baseHeightData.fill(0); 
+  // Also reset layerHeights
+  if (layerHeights) {
+    for (let l = 0; l < layerHeights.length; l++) layerHeights[l].fill(0);
+    computeTotalHeight();
+  }
+  needsRegen = true; drawCanvas(); if (threeReady) rebuildTerrain(); toast('Heightmap limpiado'); 
+});
 $('#fillHolesBtn').addEventListener('click', () => fillTerrainHoles());
 
 $('#refreshLightBtn').addEventListener('click', () => {
@@ -2294,6 +2450,7 @@ function getStateSnapshot() {
     paintColor: state.paintColor,
     paintAlpha: state.paintAlpha,
     showBase: state.showBase,
+    activeLayer: state.activeLayer,
     layerConfig: layerConfig,
     materialColors: MATERIALS.map(m => m.color),
   };
@@ -2336,6 +2493,7 @@ function applyStateSnapshot(params) {
   if (params.paintColor !== undefined) { state.paintColor = params.paintColor; $('#paintColorPicker').value = params.paintColor; }
   if (params.paintAlpha !== undefined) { state.paintAlpha = params.paintAlpha; $('#paintAlpha').value = params.paintAlpha; $('#paintAlphaVal').textContent = params.paintAlpha.toFixed(2); }
   if (params.showBase !== undefined) { state.showBase = params.showBase; var sb = $('#showBaseBtn'); if(sb) sb.innerHTML = state.showBase ? '🧱 Base visible' : '🧱 Base oculta'; }
+  if (params.activeLayer !== undefined) { state.activeLayer = params.activeLayer; activeLayer = params.activeLayer; }
   // Restore layer config if present
   if (params.layerConfig) {
     layerConfig = {};
@@ -2387,6 +2545,7 @@ async function savePreset() {
     heightData: compactFloats(heightData, 6),
     colorData: colorData ? compactFloats(colorData, 4) : null,
     materialMap: materialMap ? Array.from(materialMap) : null,
+    layerHeights: layerHeights ? layerHeights.map(lh => compactFloats(lh, 6)) : null,
     resolution: RES,
     thumbnail: null,
   };
@@ -2465,8 +2624,17 @@ async function loadPreset(id) {
         $('#resolutionVal').textContent = data.params.resolution;
       }
       heightData.set(new Float32Array(data.heightData));
-      baseHeightData.set(heightData);
-    }
+        baseHeightData.set(heightData);
+        // Restore layerHeights from saved preset (new format)
+        if (data.layerHeights && Array.isArray(data.layerHeights)) {
+          layerHeights = data.layerHeights.map(arr => new Float32Array(arr));
+          computeTotalHeight();
+          heightData.set(totalHeightData);
+        } else {
+          // Legacy preset: distribute into layers
+          initLayerHeights(state.layers);
+        }
+      }
     if (data.colorData) {
       colorData = new Float32Array(data.colorData);
     }
@@ -2540,6 +2708,7 @@ async function updatePreset(id) {
       heightData: compactFloats(heightData, 6),
       colorData: colorData ? compactFloats(colorData, 4) : null,
       materialMap: materialMap ? Array.from(materialMap) : null,
+      layerHeights: layerHeights ? layerHeights.map(lh => compactFloats(lh, 6)) : null,
       resolution: RES,
       thumbnail: null,
     };
