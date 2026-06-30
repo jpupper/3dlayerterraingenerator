@@ -329,6 +329,8 @@ function reallocateData(newRes) {
   const oldData = new Float32Array(heightData);
   // Save old layerHeights if they exist
   const oldLayerHeights = layerHeights ? layerHeights.map(lh => new Float32Array(lh)) : null;
+  // Save old materialMap if it exists (nearest-neighbor resample for discrete material IDs)
+  const oldMaterialMap = materialMap ? new Uint8Array(materialMap) : null;
   RES = newRes;
   state.resolution = RES;
   $('#resolution').value = RES;
@@ -368,6 +370,18 @@ function reallocateData(newRes) {
       layerHeights[l] = newLh;
     }
     computeTotalHeight();
+  }
+
+  // Resample materialMap (nearest-neighbor — discrete material IDs)
+  if (oldMaterialMap) {
+    materialMap = new Uint8Array(RES * RES);
+    for (let y = 0; y < RES; y++) for (let x = 0; x < RES; x++) {
+      const ox = (x / (RES-1)) * (oldRes-1);
+      const oy = (y / (RES-1)) * (oldRes-1);
+      const ix = Math.round(ox);
+      const iy = Math.round(oy);
+      materialMap[y*RES+x] = oldMaterialMap[iy*oldRes+ix];
+    }
   }
 }
 

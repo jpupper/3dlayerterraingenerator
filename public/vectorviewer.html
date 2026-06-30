@@ -133,8 +133,17 @@
       <span class="control-label">Relleno</span>
     </div>
     <div class="control-group">
+      <input type="checkbox" id="outlineToggle">
+      <span class="control-label">🔍 Outline</span>
+    </div>
+    <div class="control-group">
       <input type="checkbox" id="showEmptyToggle">
       <span class="control-label">Mostrar vacías</span>
+    </div>
+    <div class="control-group">
+      <span class="control-label">Suavizado</span>
+      <input type="range" id="smoothRange" min="0" max="5" step="1" value="2">
+      <span class="val" id="smoothVal">2</span>
     </div>
     <div class="spacer"></div>
     <button class="btn" id="downloadTierraBtn" disabled style="font-size:10px;padding:4px 8px;">🪨 Tierra todas</button>
@@ -188,10 +197,20 @@
       <svg id="editorSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130" width="100%"></svg>
     </div>
     <div class="modal-toolbar" id="editorToolbar">
-      <span class="info" id="editorInfo">Seleccion\u00e1 un contorno para borrarlo (Supr) o doble click para editar v\u00e9rtices</span>
+      <span class="info" id="editorInfo">Seleccion&aacute; un contorno para borrarlo (Supr) o doble click para editar v&eacute;rtices</span>
       <span class="edit-mode-badge" id="editModeBadge" style="display:none;">✎ Editando vértices</span>
       <span class="seg-counter" id="editorCounter">0 contornos</span>
       <button class="btn" id="editorFinishEditBtn" style="display:none;padding:4px 10px;font-size:10px;">✓ Terminar edición</button>
+      <div class="control-group" style="display:inline-flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="editorOutlineToggle">
+        <span class="control-label" style="font-size:10px;">🔍 Outline</span>
+      </div>
+      <div class="control-group" style="display:inline-flex;align-items:center;gap:3px;">
+        <button class="btn" id="zoomOutBtn" style="font-size:12px;padding:2px 6px;" title="Alejar">−</button>
+        <span id="zoomLevel" style="font-size:10px;min-width:30px;text-align:center;color:var(--text2);">100%</span>
+        <button class="btn" id="zoomInBtn" style="font-size:12px;padding:2px 6px;" title="Acercar">+</button>
+        <button class="btn" id="zoomResetBtn" style="font-size:9px;padding:2px 5px;" title="Restablecer zoom">↺</button>
+      </div>
       <button class="btn btn-delete" id="editorDeleteBtn" disabled>🗑 Borrar contorno</button>
     </div>
   </div>
@@ -495,18 +514,25 @@ function getNonHolePaths(pathData) {
   const keep = [];
   for (let i = 0; i < polygons.length; i++) {
     if (polygons[i].length < 3 || areas[i] < 0.01) continue;
-    // Centroid of the polygon
-    let cx = 0, cy = 0;
-    for (const p of polygons[i]) { cx += p.x; cy += p.y; }
-    cx /= polygons[i].length;
-    cy /= polygons[i].length;
     
     let isHole = false;
     for (let j = 0; j < polygons.length; j++) {
       if (i === j) continue;
-      // Only larger-area polygons can contain holes (inner boundaries are smaller area)
+      // Only larger-area polygons can contain holes
       if (areas[j] <= areas[i]) continue;
-      if (pointInPolygon(cx, cy, polygons[j])) {
+      
+      // Verificar si TODOS los vertices del poligono i estan dentro del poligono j.
+      // Si TODOS estan dentro, es un hueco genuino (no un poligono separado).
+      // Si ALGUN vertice esta fuera, es un poligono independiente (dos picos/mesetas
+      // separados a la misma altura) y NO debe eliminarse como hueco.
+      let allInside = true;
+      for (const p of polygons[i]) {
+        if (!pointInPolygon(p.x, p.y, polygons[j])) {
+          allInside = false;
+          break;
+        }
+      }
+      if (allInside) {
         isHole = true;
         break;
       }
@@ -620,6 +646,11 @@ function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap
     }
     const paths = generateContourPathsFromGrid(grid, RES, sizeX, sizeZ);
     let pathData = pathsToSvgPolygons(paths);
+    // Apply Chaikin smoothing to eliminate stair-step artifacts
+    // g_smoothIterations controls the number of smoothing passes (0 = off)
+    if (g_smoothIterations > 0) {
+      pathData = smoothPath(pathData, g_smoothIterations);
+    }
     // Filter out tiny traces/holes from tierra layers (artifacts of excluded agua cells)
     if (matId === 0 && materialMap) {
       pathData = filterSmallPaths(pathData, 2.0);
@@ -698,6 +729,9 @@ let g_materialMap = null; // Uint8Array of material IDs per vertex
 let g_materials = null; // [{id, name, color}]
 let g_numLayers = 15;
 let g_showEmptyLayers = false; // hide empty layers by default
+let g_smoothIterations = 2; // Chaikin smoothing iterations for SVG contours
+let g_outlineMode = false; // outline toggle: true = stroke-only (like Illustrator Outline View)
+let g_editorZoom = 1; // zoom level for the editor modal
 
 function renderLayers(layers, terrainWidth, terrainDepth) {
   currentLayers = layers;
@@ -778,8 +812,12 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
       const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
         ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
         : '';
+      const sw = parseFloat(document.getElementById('strokeWidthRange').value) || 1.5;
+      const outlineStyle = g_outlineMode
+        ? 'fill="none" stroke="' + fillColor + '" stroke-width="' + sw + '" stroke-linejoin="round" stroke-linecap="round"'
+        : 'fill="' + fillColor + '" stroke="none"';
       svgContent = '<rect width="100%" height="100%" fill="#0e0e14"/>' +
-        '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+        '<path d="' + layer.pathData + '" ' + outlineStyle + ' opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
         referenceMarkSvg(terrainWidth, terrainDepth, mgn);
     }
     body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent + '</svg>';
@@ -877,17 +915,16 @@ function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, 
   const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
-  // === EXPORT: UNA sola linea por capa ===
-  // - getNonHolePaths: solo el contorno exterior (sin agujeros),
-  //   asi cada capa se dibuja UNA sola vez en Outline View
-  // - smoothPath: suavizado Chaikin (1 iteracion) para eliminar
-  //   el efecto "serrucho" de los pixeles
-  // - fill="none" + stroke="color": en Illustrator Outline View
-  //   se ve UNA sola linea porque el stroke es el unico elemento
-  const outerPath = empty ? '' : getNonHolePaths(pathData);
-  const smoothedPath = empty ? '' : smoothPath(outerPath, 1);
-  const svgPath = empty ? '' :
-    '<path d="' + smoothedPath + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"' + scaleStr + '/>';
+  // === EXPORT: respeta el modo Outline (misma lógica que el preview) ===
+  var svgParts = '';
+  if (!empty) {
+    const sw = parseFloat(document.getElementById('strokeWidthRange').value) || 1.5;
+    const outlineStyle = g_outlineMode
+      ? 'fill="none" stroke="' + fillColor + '" stroke-width="' + sw + '" stroke-linejoin="round" stroke-linecap="round"'
+      : 'fill="' + fillColor + '" stroke="none"';
+    svgParts += '<path d="' + pathData + '" ' + outlineStyle + ' opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+  }
+  const svgPath = svgParts;
   const txt = empty ?
     '<text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Vacía</text>' : '';
   // SVG with explicit mm dimensions
@@ -914,11 +951,14 @@ function buildCombinedSvg(layers, mode) {
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
   let paths = '';
-  // Helper: build a single contour line for a layer
+  // Helper: respeta el modo Outline (misma lógica que el preview)
   function contourPath(l, color) {
-    const outer = getNonHolePaths(l.pathData);
-    const smoothed = smoothPath(outer, 1);
-    return '<path d="' + smoothed + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"' + scaleStr + '/>';
+    if (l.empty) return '';
+    const sw = parseFloat(document.getElementById('strokeWidthRange').value) || 1.5;
+    const outlineStyle = g_outlineMode
+      ? 'fill="none" stroke="' + color + '" stroke-width="' + sw + '" stroke-linejoin="round" stroke-linecap="round"'
+      : 'fill="' + color + '" stroke="none"';
+    return '<path d="' + l.pathData + '" ' + outlineStyle + ' opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
   }
   if (mode === 'all') {
     // Tierra layers first
@@ -1133,7 +1173,7 @@ function updateOverlay() {
     const key = layer.index + '_' + layer.material;
     if (layer.empty || overlayLayerStates[key] === false) continue;
     const color = getOverlayColor(layer, overlayMode);
-    pathsTierra += '<path d="' + layer.pathData + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+    pathsTierra += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
   }
   content += pathsTierra;
 
@@ -1312,6 +1352,10 @@ function renderEditorSvg() {
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
 
+  // Check editor outline mode
+  const editorOutline = document.getElementById('editorOutlineToggle') && document.getElementById('editorOutlineToggle').checked;
+  const editorSw = parseFloat(document.getElementById('strokeWidthRange').value) || 1.5;
+
   let content = '<rect width="100%" height="100%" fill="#0e0e14"/>';
 
   // Render each segment individually so we can select/hover them
@@ -1319,22 +1363,13 @@ function renderEditorSvg() {
     const seg = g_editSegments[i];
     const isSelected = g_editSelectedIndices.has(i);
     const isHovered = i === g_editHoveredIdx;
-    const sw = g_editLayerMaterial === 0 ? '1.5' : '1.5';
-    const fill = isSelected ? 'rgba(255,107,53,0.3)' : 'none';
+    const sw = g_editLayerMaterial === 0 ? editorSw : editorSw;
+    const fill = isSelected ? 'rgba(255,107,53,0.3)' : (editorOutline ? 'none' : matColor);
     const stroke = isSelected ? '#ff6b35' : matColor;
-    const strokeW = isSelected ? '3' : sw;
+    const strokeW = isSelected ? (editorOutline ? '2.5' : '3') : sw;
     const extraClass = 'seg-' + i;
 
-    if (g_editLayerMaterial === 0) {
-      // Tierra: fill with matColor, stroke on non-hole paths
-      // For the editor, just render each segment individually
-      content += '<path d="' + seg.pathData + '" fill="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke-width="' + strokeW + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
-      
-    } else {
-      // Agua: fill + stroke (separate like tierra - evenodd fill + non-hole stroke)
-      content += '<path d="' + seg.pathData + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
-      
-    }
+    content += '<path d="' + seg.pathData + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
   }
 
   // Add invisible hit-targets on top for clicking
@@ -1973,11 +2008,72 @@ document.getElementById('showEmptyToggle').addEventListener('change', function()
   renderLayers(currentLayers, terrainWidth, terrainDepth);
 });
 
+// Smooth slider: re-generates layers with new smoothing level
+const smoothRange = document.getElementById('smoothRange');
+const smoothVal = document.getElementById('smoothVal');
+smoothRange.addEventListener('input', function() {
+  g_smoothIterations = parseInt(this.value);
+  smoothVal.textContent = g_smoothIterations;
+  if (lastRawData) {
+    setLoading('Suavizando vectores...');
+    setTimeout(() => { processTerrainData(lastRawData); }, 50);
+  }
+});
+
+// ── Outline toggle (main view) ──
+document.getElementById('outlineToggle').addEventListener('change', function() {
+  g_outlineMode = this.checked;
+  rerenderFromCurrent();
+});
+
+// ── Editor: Outline toggle ──
+document.getElementById('editorOutlineToggle').addEventListener('change', function() {
+  renderEditorSvg();
+});
+
+// ── Editor: Zoom controls ──
+function applyEditorZoom() {
+  const svg = document.getElementById('editorSvg');
+  const container = document.getElementById('editorBody');
+  svg.style.transform = 'scale(' + g_editorZoom + ')';
+  svg.style.transformOrigin = 'center center';
+  document.getElementById('zoomLevel').textContent = Math.round(g_editorZoom * 100) + '%';
+}
+document.getElementById('zoomInBtn').addEventListener('click', function() {
+  g_editorZoom = Math.min(5, g_editorZoom * 1.4);
+  applyEditorZoom();
+});
+document.getElementById('zoomOutBtn').addEventListener('click', function() {
+  g_editorZoom = Math.max(0.2, g_editorZoom / 1.4);
+  applyEditorZoom();
+});
+document.getElementById('zoomResetBtn').addEventListener('click', function() {
+  g_editorZoom = 1;
+  applyEditorZoom();
+});
+// Mouse wheel zoom on editor SVG
+document.getElementById('editorSvg').addEventListener('wheel', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 1 / 1.15 : 1.15;
+    g_editorZoom = Math.max(0.2, Math.min(5, g_editorZoom * delta));
+    applyEditorZoom();
+  }
+});
+// Reset zoom when opening editor
+const origOpenEditor = openEditor;
+openEditor = function(layerIndex, material) {
+  g_editorZoom = 1;
+  origOpenEditor(layerIndex, material);
+  applyEditorZoom();
+};
+
 // ═══════════════════════════════════════════════════════
 // TERRAIN DATA PROCESSING
 // ═══════════════════════════════════════════════════════
 let terrainWidth = 130;
 let terrainDepth = 130;
+let lastRawData = null; // stores the last processed data for re-processing (e.g. when smoothing changes)
 
 function processTerrainData(data) {
   setLoading('Generando vectores...');
@@ -2095,6 +2191,9 @@ function processTerrainData(data) {
 
   // Re-render overlay if material data changed
   if (g_materialMap) renderOverlay();
+
+  // Cache raw data so we can re-process with updated smoothing
+  lastRawData = data;
 }
 
 // ═══════════════════════════════════════════════════════

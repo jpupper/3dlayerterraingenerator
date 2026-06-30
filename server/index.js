@@ -131,6 +131,13 @@ app.get(BASE_PATH + '/api', (req, res) => {
   res.json({ name: '3D Layer Terrain Generator API', version: '1.0.0', endpoints: ['/api/heightmap', '/api/model', '/api/terrain', '/api/terrains'] });
 });
 
+// Test SVG save endpoint
+app.post(BASE_PATH + '/api/test-svg', express.text({ limit: '10mb' }), (req, res) => {
+  const filename = 'test_layer7.svg';
+  fs.writeFileSync(path.join(PUBLIC_DIR, filename), req.body);
+  res.json({ filename: filename, size: req.body.length });
+});
+
 // --- Start ---
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Terrain Generator running on port ${PORT}`);
