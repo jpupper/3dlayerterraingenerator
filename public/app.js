@@ -1944,13 +1944,11 @@ $('#viewGlbBtn').addEventListener('click', () => {
     if (window._activePresetId) {
       viewerUrl += '?preset=' + encodeURIComponent(window._activePresetId);
       // Also save the GLB to the server so the viewer can load it directly
-      if (IS_LOCAL) {
-        fetch(API_BASE + '/api/terrain/' + encodeURIComponent(window._activePresetId) + '/glb', {
+      fetch(API_BASE + '/api/terrain/' + encodeURIComponent(window._activePresetId) + '/glb', {
           method: 'POST',
           body: glb,
           headers: { 'Content-Type': 'application/octet-stream' }
         }).catch(err => console.warn('GLB upload failed:', err));
-      }
     } else if (state.activeTerrain !== 'default-hill') {
       viewerUrl += '?terrain=' + encodeURIComponent(state.activeTerrain);
     }
@@ -2260,11 +2258,25 @@ $('#importTerrainBtn').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════
 // PRESETS: SAVE / LOAD via API
 // ═══════════════════════════════════════════════════════
-// API_BASE: mismo origen (relativo) para evitar CORS
-// Los presets se cargan como archivos estaticos (/uploads/ y /presets-list.json)
+// API_BASE: determina donde esta el backend segun desde donde se accede
+// - Localhost: API relativa al mismo origen
+// - FTP (fullscreencode.com): solo hosts archivos estaticos, API apunta al VPS
+// - VPS u otro dominio: API en el mismo origen via nginx proxy
 const IS_LOCAL = window.location.protocol === 'file:' || ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
-const BASE_PATH = IS_LOCAL ? '' : '/3dlayerterraingenerator';
-const API_BASE = window.location.origin + BASE_PATH;
+const IS_FTP = window.location.hostname === 'fullscreencode.com';
+const VPS_ORIGIN = 'https://vps-4455523-x.dattaweb.com';
+const VPS_BASE_PATH = '/terrain';
+
+let API_BASE;
+if (IS_LOCAL) {
+  API_BASE = ''; // relativo al mismo origen
+} else if (IS_FTP) {
+  // FTP solo hosts estaticos, la API esta en el VPS
+  API_BASE = VPS_ORIGIN + VPS_BASE_PATH;
+} else {
+  // VPS u otro dominio con proxy nginx
+  API_BASE = window.location.origin + VPS_BASE_PATH;
+}
 
 const $presetName = $('#rightPresetName');
 const $presetGrid = $('#rightPresetGrid');
@@ -2377,7 +2389,6 @@ function compactFloats(arr, decimals) {
 
 async function savePreset() {
   if (!$presetName) { toast('Campo de nombre no disponible'); return; }
-  if (!IS_LOCAL) { toast('Guardar preset solo disponible en modo local (localhost)'); return; }
   const name = $presetName.value.trim();
   if (!name) { toast('Escribí un nombre para el preset'); if ($presetName) $presetName.focus(); return; }
   const params = getStateSnapshot();
@@ -2412,7 +2423,7 @@ async function loadPresets() {
   try {
     // In local mode, use the API endpoint which dynamically lists files
     // In remote mode, use the static presets-list.json
-    const url = IS_LOCAL ? API_BASE + '/api/terrains' : API_BASE + '/presets-list.json';
+    const url = API_BASE + '/api/terrains';
     const res = await fetch(url);
     if (!res.ok) { $presetGrid.innerHTML = '<div style="font-size:10px;color:var(--text2);text-align:center;padding:12px 0;">Error al cargar presets</div>'; return; }
     const list = await res.json();
@@ -2517,7 +2528,6 @@ async function loadPreset(id) {
 }
 
 async function deletePreset(id) {
-  if (!IS_LOCAL) { toast('Eliminar preset solo disponible en modo local'); return; }
   try {
     const res = await fetch(API_BASE + '/api/terrain/' + encodeURIComponent(id), { method: 'DELETE' });
     if (!res.ok) { toast('Error al eliminar preset'); return; }
@@ -2530,7 +2540,6 @@ async function deletePreset(id) {
 }
 
 async function updatePreset(id) {
-  if (!IS_LOCAL) { toast('Actualizar preset solo disponible en modo local (localhost)'); return; }
   if (!id) { toast('No hay preset activo para actualizar'); return; }
   const toastMsg = toast('Actualizando preset...');
   try {

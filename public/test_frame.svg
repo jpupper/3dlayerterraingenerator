@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2.17 -2.17 134.34 164.34" width="134.34mm" height="164.34mm">
+  <!-- NO black background -- transparent for Illustrator -->
+
+  <!-- Sample terrain layer paths -->
+  <path d="M0,0 L60,0 L80,20 L80,60 L70,80 L50,100 L20,120 L0,130 Z
+           M70,20 L120,20 L130,40 L130,80 L110,100 L90,110 L60,110 L50,90 L50,50 Z
+           M30,110 L50,130 L30,150 L10,150 L0,140 Z
+           M90,50 L110,30 L130,30 L120,60 Z"
+        fill="#c4a265" stroke="#c4a265" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd"/>
+
+  <!-- Orange outline rectangle frame -->
+  <rect x="-1.54" y="-1.54" width="131.08" height="161.08" fill="none" stroke="#e68a2e" stroke-width="0.4"/>
+
+  <!-- Orange corner L-marks (solid color for Illustrator compat) -->
+  <path d="M-1.54,1.46 L-1.54,-1.54 L1.46,-1.54
+           M128.54,-1.54 L131.54,-1.54 L131.54,1.46
+           M131.54,158.54 L131.54,161.54 L128.54,161.54
+           M1.46,161.54 L-1.54,161.54 L-1.54,158.54"
+        fill="none" stroke="#cc5500" stroke-width="1.0" stroke-linecap="round"/>
+
+  <!-- Dimension labels (solid color) -->
+  <text x="65" y="-3.0" text-anchor="middle" fill="#cc5500" font-size="2.8" font-family="monospace" font-weight="bold">130 cm</text>
+  <text x="65" y="165.5" text-anchor="middle" fill="#cc5500" font-size="2.8" font-family="monospace" font-weight="bold">130 cm</text>
+  <text x="-4.0" y="80" text-anchor="end" fill="#cc5500" font-size="2.8" font-family="monospace" font-weight="bold" transform="rotate(-90,-4.0,80)">160 cm</text>
+  <text x="138.0" y="80" text-anchor="start" fill="#cc5500" font-size="2.8" font-family="monospace" font-weight="bold" transform="rotate(90,138.0,80)">160 cm</text>
+</svg>

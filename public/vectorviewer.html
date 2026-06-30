@@ -188,7 +188,7 @@
       <svg id="editorSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 130" width="100%"></svg>
     </div>
     <div class="modal-toolbar" id="editorToolbar">
-      <span class="info" id="editorInfo">Seleccioná un contorno en la imagen para borrarlo</span>
+      <span class="info" id="editorInfo">Seleccion\u00e1 un contorno para borrarlo (Supr) o doble click para editar v\u00e9rtices</span>
       <span class="edit-mode-badge" id="editModeBadge" style="display:none;">✎ Editando vértices</span>
       <span class="seg-counter" id="editorCounter">0 contornos</span>
       <button class="btn" id="editorFinishEditBtn" style="display:none;padding:4px 10px;font-size:10px;">✓ Terminar edición</button>
@@ -200,6 +200,19 @@
 <!-- ── Hidden file input for SVG import (wired in JS) ── -->
 
 <script>
+// API endpoints — presets/JSON live on VPS
+const IS_LOCAL_VV = window.location.protocol === 'file:' || ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+const IS_FTP_VV = window.location.hostname === 'fullscreencode.com';
+const VPS_ORIGIN_VV = 'https://vps-4455523-x.dattaweb.com';
+const VPS_BASE_PATH_VV = '/terrain';
+let UPLOADS_BASE_VV;
+if (IS_LOCAL_VV) {
+  UPLOADS_BASE_VV = window.location.origin;
+} else if (IS_FTP_VV) {
+  UPLOADS_BASE_VV = VPS_ORIGIN_VV + VPS_BASE_PATH_VV;
+} else {
+  UPLOADS_BASE_VV = window.location.origin + VPS_BASE_PATH_VV;
+}
 // ═══════════════════════════════════════════════════════
 // DOM
 // ═══════════════════════════════════════════════════════
@@ -507,6 +520,77 @@ function getNonHolePaths(pathData) {
 }
 
 // ═══════════════════════════════════════════════════════
+// POST-PROCESADO: Suavizado Chaikin para paths SVG
+// ═══════════════════════════════════════════════════════
+// Aplica el algoritmo de Chaikin para suavizar el path:
+// en cada iteracion subdivide cada segmento creando 2 puntos
+// nuevos a 25% y 75% del segmento original, redondeando esquinas.
+function smoothPath(pathData, iterations) {
+  if (!pathData || iterations <= 0) return pathData;
+  iterations = iterations || 1;
+  // Split into individual M...Z segments
+  const segs = pathData.split('M').filter(s => s.trim());
+  const result = [];
+  for (const seg of segs) {
+    const pts = seg.split('Z')[0].trim().split('L');
+    let poly = pts.map(pt => {
+      const parts = pt.split(',');
+      return { x: parseFloat(parts[0]), y: parseFloat(parts[1]) };
+    }).filter(p => !isNaN(p.x));
+    if (poly.length < 3) { result.push('M' + seg.trim()); continue; }
+    // Apply Chaikin iterations
+    for (let iter = 0; iter < iterations; iter++) {
+      const newPoly = [];
+      for (let i = 0; i < poly.length; i++) {
+        const p0 = poly[i];
+        const p1 = poly[(i + 1) % poly.length];
+        // Punto a 25% del segmento
+        newPoly.push({ x: p0.x + 0.25 * (p1.x - p0.x), y: p0.y + 0.25 * (p1.y - p0.y) });
+        // Punto a 75% del segmento
+        newPoly.push({ x: p0.x + 0.75 * (p1.x - p0.x), y: p0.y + 0.75 * (p1.y - p0.y) });
+      }
+      poly = newPoly;
+    }
+    // Reconstruir el path string
+    let pathStr = 'M' + poly[0].x + ',' + poly[0].y;
+    for (let i = 1; i < poly.length; i++) {
+      pathStr += 'L' + poly[i].x + ',' + poly[i].y;
+    }
+    pathStr += 'Z';
+    result.push(pathStr);
+  }
+  return result.join('');
+}
+
+// Remove small path segments (holes/traces) from pathData that are below
+// minArea. These are typically tiny artifacts from agua cells inside tierra.
+function filterSmallPaths(pathData, minArea) {
+  if (!pathData || pathData.length < 10) return pathData;
+  const segs = pathData.split('M').filter(s => s.trim());
+  if (segs.length <= 1) return pathData;
+  const polygons = segs.map(seg => {
+    const pts = seg.split('Z')[0].trim().split('L');
+    return pts.map(pt => {
+      const parts = pt.split(',');
+      return { x: parseFloat(parts[0]), y: parseFloat(parts[1]) };
+    }).filter(p => !isNaN(p.x));
+  });
+  function polygonArea(poly) {
+    let area = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      area += (poly[j].x * poly[i].y - poly[i].x * poly[j].y);
+    }
+    return Math.abs(area) / 2;
+  }
+  const keep = [];
+  for (let i = 0; i < polygons.length; i++) {
+    if (polygons[i].length >= 3 && polygonArea(polygons[i]) >= minArea) keep.push(i);
+  }
+  if (keep.length === 0) return segs[0] ? 'M' + segs[0].trim() : '';
+  return keep.map(i => 'M' + segs[i].trim()).join('');
+}
+
+// ═══════════════════════════════════════════════════════
 // GENERATE ALL LAYERS
 // ═══════════════════════════════════════════════════════
 function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap, matId, merged) {
@@ -523,9 +607,11 @@ function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap
         let v = heightData[idx];
         if (materialMap && matId !== undefined) {
           if (materialMap[idx] !== matId) {
-            // merged=true: keep other-material cells in grid (no holes in contour)
-            // merged=false: zero them out (isolate this material's cells)
-            if (!merged) v = 0;
+            // merged=true: zero out non-matching cells for tierra layers so agua
+            // patches never appear inside tierra contours. Small traces/holes
+            // created by this are filtered out via filterSmallPaths() below.
+            // merged=false: zero out (isolate this material's cells)
+            v = 0;
           }
         }
         const inBand = v > 0.001 && v >= lo;
@@ -533,7 +619,11 @@ function generateAllLayers(heightData, RES, numLayers, sizeX, sizeZ, materialMap
       }
     }
     const paths = generateContourPathsFromGrid(grid, RES, sizeX, sizeZ);
-    const pathData = pathsToSvgPolygons(paths);
+    let pathData = pathsToSvgPolygons(paths);
+    // Filter out tiny traces/holes from tierra layers (artifacts of excluded agua cells)
+    if (matId === 0 && materialMap) {
+      pathData = filterSmallPaths(pathData, 2.0);
+    }
     layers.push({
       index: l,
       material: matId !== undefined ? matId : -1, // -1 = combined, 0=tierra, 1=agua
@@ -689,10 +779,8 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
         ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
         : '';
       svgContent = '<rect width="100%" height="100%" fill="#0e0e14"/>' +
-        (layer.material === 0
-          ? '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
-            '<path d="' + getNonHolePaths(layer.pathData) + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>'
-          : '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>');
+        '<path d="' + layer.pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
+        referenceMarkSvg(terrainWidth, terrainDepth, mgn);
     }
     body.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + svgWidth + '" height="' + svgHeight + '">' + svgContent + '</svg>';
     card.appendChild(body);
@@ -745,6 +833,34 @@ function renderLayers(layers, terrainWidth, terrainDepth) {
 
 // ═══════════════════════════════════════════════════════
 // DOWNLOAD
+// Reference frame: a border around the ENTIRE SVG that defines the
+// cutting/printing area. Corner L-marks + dimension labels on all sides.
+function referenceMarkSvg(terrainWidth, terrainDepth, mgn) {
+  const x = -mgn;
+  const y = -mgn;
+  const w = terrainWidth + 2*mgn;
+  const h = terrainDepth + 2*mgn;
+  const sw = Math.max(0.3, Math.min(w, h) * 0.003);
+  const cl = Math.max(1.5, Math.min(w, h) * 0.015);
+  const gap = sw * 2;
+  // Use solid hex colors — Illustrator does NOT support rgba() in SVG
+  const frame =
+    '<rect x="' + (x + gap) + '" y="' + (y + gap) + '" width="' + (w - 2*gap) + '" height="' + (h - 2*gap) + '" fill="none" stroke="#e68a2e" stroke-width="' + sw + '"/>' +
+    '<path d="' +
+    'M' + (x+gap) + ',' + (y+gap+cl) + ' L' + (x+gap) + ',' + (y+gap) + ' L' + (x+gap+cl) + ',' + (y+gap) +
+    ' M' + (x+w-gap-cl) + ',' + (y+gap) + ' L' + (x+w-gap) + ',' + (y+gap) + ' L' + (x+w-gap) + ',' + (y+gap+cl) +
+    ' M' + (x+w-gap) + ',' + (y+h-gap-cl) + ' L' + (x+w-gap) + ',' + (y+h-gap) + ' L' + (x+w-gap-cl) + ',' + (y+h-gap) +
+    ' M' + (x+gap+cl) + ',' + (y+h-gap) + ' L' + (x+gap) + ',' + (y+h-gap) + ' L' + (x+gap) + ',' + (y+h-gap-cl) +
+    '" fill="none" stroke="#cc5500" stroke-width="' + (sw * 2.5) + '" stroke-linecap="round"/>';
+  const fs = Math.max(1.5, Math.min(w, h) * 0.022);
+  const labels =
+    '<text x="' + (x + w/2) + '" y="' + (y + gap - 0.3) + '" text-anchor="middle" fill="#cc5500" font-size="' + fs + '" font-family="monospace" font-weight="bold">' + terrainWidth + ' cm</text>' +
+    '<text x="' + (x + w/2) + '" y="' + (y + h + fs + gap - 0.3) + '" text-anchor="middle" fill="#cc5500" font-size="' + fs + '" font-family="monospace" font-weight="bold">' + terrainWidth + ' cm</text>' +
+    '<text x="' + (x + gap - 0.3) + '" y="' + (y + h/2) + '" text-anchor="end" fill="#cc5500" font-size="' + fs + '" font-family="monospace" font-weight="bold" transform="rotate(-90,' + (x + gap - 0.3) + ',' + (y + h/2) + ')">' + terrainDepth + ' cm</text>' +
+    '<text x="' + (x + w + fs + gap - 0.3) + '" y="' + (y + h/2) + '" text-anchor="start" fill="#cc5500" font-size="' + fs + '" font-family="monospace" font-weight="bold" transform="rotate(90,' + (x + w + fs + gap - 0.3) + ',' + (y + h/2) + ')">' + terrainDepth + ' cm</text>';
+  return frame + labels;
+}
+
 // ═══════════════════════════════════════════════════════
 function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, material) {
   const numLayers = currentLayers.length;
@@ -761,16 +877,25 @@ function buildLayerSvg(layerIndex, pathData, terrainWidth, terrainDepth, empty, 
   const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
+  // === EXPORT: UNA sola linea por capa ===
+  // - getNonHolePaths: solo el contorno exterior (sin agujeros),
+  //   asi cada capa se dibuja UNA sola vez en Outline View
+  // - smoothPath: suavizado Chaikin (1 iteracion) para eliminar
+  //   el efecto "serrucho" de los pixeles
+  // - fill="none" + stroke="color": en Illustrator Outline View
+  //   se ve UNA sola linea porque el stroke es el unico elemento
+  const outerPath = empty ? '' : getNonHolePaths(pathData);
+  const smoothedPath = empty ? '' : smoothPath(outerPath, 1);
   const svgPath = empty ? '' :
-    (material === 0
-      ? '<path d="' + pathData + '" fill="' + fillColor + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
-        '<path d="' + getNonHolePaths(pathData) + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>'
-      : '<path d="' + pathData + '" fill="' + fillColor + '" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>');
+    '<path d="' + smoothedPath + '" fill="none" stroke="' + fillColor + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"' + scaleStr + '/>';
   const txt = empty ?
     '<text x="50%" y="50%" text-anchor="middle" fill="#444" font-size="14" font-family="sans-serif">Vacía</text>' : '';
-  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="800" height="' + (800 * (terrainDepth + 2*mgn) / (terrainWidth + 2*mgn)) + '">' +
-    '<rect width="100%" height="100%" fill="#0e0e14"/>' +
+  // SVG with explicit mm dimensions
+  const svgW = terrainWidth + 2*mgn;
+  const svgH = terrainDepth + 2*mgn;
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="' + svgW + 'mm" height="' + svgH + 'mm">' +
     svgPath + txt +
+    referenceMarkSvg(terrainWidth, terrainDepth, mgn) +
     '</svg>';
 }
 
@@ -788,41 +913,43 @@ function buildCombinedSvg(layers, mode) {
   const scaleStr = (g_modelScaleX !== 1 || g_modelScaleZ !== 1)
     ? ' transform="translate(' + cx + ',' + cy + ') scale(' + g_modelScaleX + ',' + g_modelScaleZ + ') translate(' + (-cx) + ',' + (-cy) + ')"'
     : '';
-  const sw = g_strokeWidth;
-
   let paths = '';
+  // Helper: build a single contour line for a layer
+  function contourPath(l, color) {
+    const outer = getNonHolePaths(l.pathData);
+    const smoothed = smoothPath(outer, 1);
+    return '<path d="' + smoothed + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"' + scaleStr + '/>';
+  }
   if (mode === 'all') {
-    // 1) Agua layers: fill+stroke
-    for (const l of nonEmpty) {
-      if (l.material !== 1) continue;
-      const color = g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff';
-      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
-    }
-    // 2) Tierra layers: stroke-only on non-hole paths
+    // Tierra layers first
     for (const l of nonEmpty) {
       if (l.material !== 0) continue;
       const color = g_materials && g_materials[0] ? g_materials[0].color : '#c4a265';
-      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
-        '<path d="' + getNonHolePaths(l.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9"' + scaleStr + '/>';
+      paths += contourPath(l, color);
+    }
+    // Agua layers on top
+    for (const l of nonEmpty) {
+      if (l.material !== 1) continue;
+      const color = g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff';
+      paths += contourPath(l, color);
     }
   } else if (mode === 'tierra') {
     const color = g_materials && g_materials[0] ? g_materials[0].color : '#c4a265';
     for (const l of nonEmpty) {
       if (l.material !== 0) continue;
-      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>' +
-        '<path d="' + getNonHolePaths(l.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9"' + scaleStr + '/>';
+      paths += contourPath(l, color);
     }
   } else if (mode === 'agua') {
     const color = g_materials && g_materials[1] ? g_materials[1].color : '#4a9eff';
     for (const l of nonEmpty) {
       if (l.material !== 1) continue;
-      paths += '<path d="' + l.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + sw + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+      paths += contourPath(l, color);
     }
   }
 
-  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="800" height="' + (800 * (terrainDepth + 2*mgn) / (terrainWidth + 2*mgn)) + '">' +
-    '<rect width="100%" height="100%" fill="#0e0e14"/>' +
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + vb + '" width="' + (terrainWidth + 2*mgn) + 'mm" height="' + (terrainDepth + 2*mgn) + 'mm">' +
     paths +
+    referenceMarkSvg(terrainWidth, terrainDepth, mgn) +
     '</svg>';
 }
 
@@ -995,7 +1122,7 @@ function updateOverlay() {
     const key = layer.index + '_' + layer.material;
     if (layer.empty || overlayLayerStates[key] === false) continue;
     const color = getOverlayColor(layer, overlayMode);
-    pathsAgua += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
+    pathsAgua += '<path d="' + layer.pathData + '" fill="' + color + '" stroke="none" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
   }
   content += pathsAgua;
 
@@ -1006,7 +1133,7 @@ function updateOverlay() {
     const key = layer.index + '_' + layer.material;
     if (layer.empty || overlayLayerStates[key] === false) continue;
     const color = getOverlayColor(layer, overlayMode);
-    pathsTierra += '<path d="' + getNonHolePaths(layer.pathData) + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" opacity="0.9"' + scaleStr + '/>';
+    pathsTierra += '<path d="' + layer.pathData + '" fill="none" stroke="' + color + '" stroke-width="' + g_strokeWidth + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd"' + scaleStr + '/>';
   }
   content += pathsTierra;
 
@@ -1201,11 +1328,12 @@ function renderEditorSvg() {
     if (g_editLayerMaterial === 0) {
       // Tierra: fill with matColor, stroke on non-hole paths
       // For the editor, just render each segment individually
-      content += '<path d="' + seg.pathData + '" fill="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke="none" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
-      content += '<path d="' + getNonHolePaths(seg.pathData) + '" fill="none" stroke="' + stroke + '" stroke-width="' + strokeW + '" opacity="0.9" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+      content += '<path d="' + seg.pathData + '" fill="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke="' + (isSelected ? 'rgba(255,107,53,0.3)' : matColor) + '" stroke-width="' + strokeW + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+      
     } else {
-      // Agua: fill + stroke
-      content += '<path d="' + seg.pathData + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+      // Agua: fill + stroke (separate like tierra - evenodd fill + non-hole stroke)
+      content += '<path d="' + seg.pathData + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + strokeW + '" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" fill-rule="evenodd" class="seg-path ' + extraClass + '"' + scaleStr + '/>';
+      
     }
   }
 
@@ -1236,6 +1364,13 @@ function renderEditorSvg() {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       selectSeg(idx, e.ctrlKey || e.metaKey);
+    });
+    el.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (typeof g_editVertexMode !== 'undefined' && g_editVertexMode) exitVertexEdit();
+      g_editSelectedIdx = idx;
+      g_editSelectedIndices = new Set([idx]);
+      enterVertexEdit(idx);
     });
   });
 
@@ -1334,24 +1469,22 @@ function updateEditorPaths() {
 
     if (g_editLayerMaterial === 0) {
       const fillPath = createSvgElement('path', {
-        d: seg.pathData, fill: matColor, stroke: 'none',
+        d: seg.pathData, fill: matColor, stroke: stroke,
+        'stroke-width': strokeW, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
         opacity: '0.9', 'fill-rule': 'evenodd',
         class: extraClass
       }, scaleStr);
-      const strokePath = createSvgElement('path', {
-        d: getNonHolePaths(seg.pathData), fill: 'none',
-        stroke: stroke, 'stroke-width': strokeW, opacity: '0.9',
-        class: extraClass
-      }, scaleStr);
+      
       svg.insertBefore(fillPath, hitTargets);
       svg.insertBefore(strokePath, hitTargets);
     } else {
-      const path = createSvgElement('path', {
+      const fillPath = createSvgElement('path', {
         d: seg.pathData, fill: isSelected ? 'rgba(255,107,53,0.3)' : 'none',
-        stroke: stroke, 'stroke-width': strokeW, opacity: '0.9',
+        stroke: 'none', opacity: '0.9',
         'fill-rule': 'evenodd', class: extraClass
       }, scaleStr);
-      svg.insertBefore(path, hitTargets);
+      svg.insertBefore(fillPath, hitTargets);
+      svg.insertBefore(strokePath, hitTargets);
     }
   }
 }
@@ -1379,11 +1512,19 @@ function highlightSeg(idx, on) {
 
 function selectSeg(idx, ctrl) {
   if (ctrl) {
-    // Ctrl+click: enter vertex edit mode for this contour
-    if (typeof g_editVertexMode !== 'undefined' && g_editVertexMode) exitVertexEdit();
-    g_editSelectedIdx = idx;
-    g_editSelectedIndices = new Set([idx]);
-    enterVertexEdit(idx);
+    // Ctrl+click: multi-select toggle — add/remove from selection set
+    if (g_editVertexMode) return;
+    if (g_editSelectedIndices.has(idx)) {
+      g_editSelectedIndices.delete(idx);
+    } else {
+      g_editSelectedIndices.add(idx);
+    }
+    document.getElementById('editorDeleteBtn').disabled = g_editSelectedIndices.size === 0;
+    const count = g_editSelectedIndices.size;
+    document.getElementById('editorInfo').textContent = count > 0
+      ? count + ' contorno' + (count > 1 ? 's' : '') + ' seleccionado' + (count > 1 ? 's' : '')
+      : 'Seleccion\u00e1 un contorno para borrarlo';
+    renderEditorSvg();
     return;
   }
   // Normal click: single selection
@@ -1414,7 +1555,7 @@ function selectSeg(idx, ctrl) {
     }
   });
 
-  document.getElementById('editorInfo').textContent = 'Contorno ' + (idx + 1) + ' de ' + g_editSegments.length + ' seleccionado — Ctrl+click para editar vértices';
+  document.getElementById('editorInfo').textContent = 'Contorno ' + (idx + 1) + ' de ' + g_editSegments.length + ' seleccionado — Ctrl+click para multi-seleccionar, doble click para editar vertices';
   document.getElementById('editorDeleteBtn').disabled = false;
 }
 
@@ -1718,8 +1859,8 @@ function exitVertexEdit() {
   document.getElementById('editModeBadge').style.display = 'none';
   document.getElementById('editorFinishEditBtn').style.display = 'none';
   document.getElementById('editorInfo').textContent = g_editSelectedIndices.size > 0
-    ? 'Ctrl+click para editar vértices'
-    : 'Seleccioná un contorno para borrarlo o Ctrl+click para editarlo';
+    ? g_editSelectedIndices.size + ' contorno' + (g_editSelectedIndices.size > 1 ? 's' : '') + ' seleccionado' + (g_editSelectedIndices.size > 1 ? 's' : '')
+    : 'Seleccion\u00e1 un contorno para borrarlo (Supr) o doble click para editar v\u00e9rtices';
   renderEditorSvg();
 }
 
@@ -1782,6 +1923,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (document.getElementById('editorModal').classList.contains('open')) {
         if (g_editVertexMode) { exitVertexEdit(); }
         else { closeEditor(); }
+      }
+    }
+    // Delete or Backspace: delete selected contours in editor
+    if ((e.key === 'Delete' || e.key === 'Supr') && document.getElementById('editorModal').classList.contains('open')) {
+      if (g_editSelectedIndices.size > 0) {
+        e.preventDefault();
+        deleteSelectedContour();
       }
     }
     // Track Ctrl key state
@@ -1974,7 +2122,7 @@ if (window.opener && window.opener !== window) {
       } else if (fallbackId) {
         // Load from server
         setLoading('Cargando preset...');
-        fetch(window.location.origin + (window.location.origin.includes('localhost')||window.location.origin.includes('127.0.0.1')?'':'/3dlayerterraingenerator') + '/uploads/' + encodeURIComponent(fallbackId))
+        fetch(UPLOADS_BASE_VV + '/uploads/' + encodeURIComponent(fallbackId))
           .then(r => { if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
           .then(d => processTerrainData(d))
           .catch(e => { hideLoading(); toast('Error: '+e.message); });
@@ -2002,7 +2150,7 @@ if (!window.opener) {
   } else if (terrainFromUrl) {
     // Load a saved preset from server
     setLoading('Cargando preset...');
-    fetch(window.location.origin + (window.location.origin.includes('localhost')||window.location.origin.includes('127.0.0.1')?'':'/3dlayerterraingenerator') + '/uploads/' + encodeURIComponent(terrainFromUrl))
+    fetch(UPLOADS_BASE_VV + '/uploads/' + encodeURIComponent(terrainFromUrl))
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(data => processTerrainData(data))
       .catch(e => { hideLoading(); toast('Error cargando preset: ' + e.message); });

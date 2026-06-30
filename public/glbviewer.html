@@ -57,6 +57,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+// ═══════════════════════════════════════════════════════
+// API endpoints — presets/JSON/GLB live on VPS
+// ═══════════════════════════════════════════════════════
+const IS_LOCAL_GLB = window.location.protocol === 'file:' || ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname);
+const IS_FTP_GLB = window.location.hostname === 'fullscreencode.com';
+const VPS_ORIGIN_GLB = 'https://vps-4455523-x.dattaweb.com';
+const VPS_BASE_PATH_GLB = '/terrain';
+let UPLOADS_BASE_GLB;
+if (IS_LOCAL_GLB) {
+  UPLOADS_BASE_GLB = window.location.origin;
+} else if (IS_FTP_GLB) {
+  UPLOADS_BASE_GLB = VPS_ORIGIN_GLB + VPS_BASE_PATH_GLB;
+} else {
+  UPLOADS_BASE_GLB = window.location.origin + VPS_BASE_PATH_GLB;
+}
+
 // DOM
 const viewport = $('#viewport');
 const toastEl = $('#toast');
@@ -290,12 +306,9 @@ if (!window.opener) {
   } else if (params.has('preset')) {
     const presetId = params.get('preset');
     infoBar.textContent = 'Cargando preset: ' + presetId + '...';
-    const API_BASE = window.location.origin;
-    const BASE_PATH = (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')) ? '' : '/3dlayerterraingenerator';
-
     // Try to load the saved GLB for this preset directly
     var glbFilename = presetId.replace(/\\.json$/i, '') + '.glb';
-    var glbUrl = API_BASE + BASE_PATH + '/uploads/' + encodeURIComponent(glbFilename);
+    var glbUrl = UPLOADS_BASE_GLB + '/uploads/' + encodeURIComponent(glbFilename);
 
     // Check if the GLB exists on the server first
     fetch(glbUrl, { method: 'HEAD' }).then(function(r) {
@@ -315,7 +328,7 @@ if (!window.opener) {
     }).catch(function() {
       // Fallback: fetch preset metadata and show helper message
       infoBar.textContent = 'Preset encontrado, pero no hay GLB guardado. Usá "Ver GLB" desde el editor.';
-      fetch(API_BASE + BASE_PATH + '/uploads/' + encodeURIComponent(presetId))
+      fetch(UPLOADS_BASE_GLB + '/uploads/' + encodeURIComponent(presetId))
         .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function(data) {
           var name = data.name || presetId;
@@ -339,6 +352,4 @@ if (!window.opener) {
     toast('Usá el botón "Ver GLB" desde el editor principal');
   }
 }
-</script>
-</body>
 </html>
